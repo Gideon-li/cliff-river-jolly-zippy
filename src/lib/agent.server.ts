@@ -2,6 +2,9 @@ import type { CivilTime, EventId, GeoLocation, Portrait, SessionMode } from "./a
 import { EMPTY_PORTRAIT, EVENT_CATALOG, MODE_LABEL } from "./app-types";
 import { llmChat } from "./qimen.server";
 import { sameShichen } from "./shichen";
+import { parseFortuneRelative } from "./fortune-time";
+
+export { beijingNowCivil, parseFortuneRelative, shiftCivil } from "./fortune-time";
 
 export const GREETING =
   "你好呀，我是问象。想聊一聊，或找我看盘，都可以直接说。看盘有四种测法：按此刻、指定一个时间、看年运月运日运，或摇个三位数求签。你想用哪一种，跟我说一声就好。盘面只作参考，玄学预测，仅供娱乐。";
@@ -142,21 +145,22 @@ function parsePlace(text: string): ExtractedTurn["location"] {
 
 function guessMode(text: string): { mode: CastMode | null; explicit: boolean } {
   const t = text.trim();
+  const fortune = parseFortuneRelative(t);
+  if (fortune.span || /年运|月运|日运|运势|看运|流年|流月/.test(t)) {
+    return { mode: "fortune", explicit: fortune.explicit || /年运|月运|日运|运势|看运/.test(t) };
+  }
+  if (/第三|选三|测法三|第三种/.test(t)) return { mode: "fortune", explicit: true };
   if (/(?:摇卦|摇个|求签|摇签|三位数)/.test(t) || /(?:摇卦|摇个|号码|数字)[^\d]{0,4}\d{3}/.test(t) || /^\d{3}$/.test(t)) {
     return { mode: "lots", explicit: true };
   }
   if (/第四|选四|测法四|第四种/.test(t)) return { mode: "lots", explicit: true };
-  if (/年运|今年运|这一年|月运|这个月运|本月运|日运|今天运|今日运|看运势|年运月运/.test(t)) {
-    return { mode: "fortune", explicit: true };
-  }
-  if (/第三|选三|测法三|第三种/.test(t)) return { mode: "fortune", explicit: true };
   if (
     /指定时间|选个时间|选定时间|约在|改到/.test(t) ||
     /明天|后天|大后天|下周|上周/.test(t) ||
     /\d{1,2}\s*月\s*\d{1,2}/.test(t) ||
     /\d{1,2}\s*点/.test(t)
   ) {
-    return { mode: "timed", explicit: /明天|后天|点|月|指定|选定/.test(t) };
+    return { mode: "timed", explicit: /明天|后天|点|指定|选定/.test(t) };
   }
   if (/第二|选二|测法二|第二种/.test(t)) return { mode: "timed", explicit: true };
   if (
@@ -165,7 +169,9 @@ function guessMode(text: string): { mode: CastMode | null; explicit: boolean } {
   ) {
     return { mode: "now", explicit: true };
   }
-  if (/帮我看|起盘|测一|算一|问问盘|看一下/.test(t)) return { mode: "now", explicit: false };
+  if (/帮我看|起盘|测一|算一|问问盘|看一下|预测|算算|帮我测|帮我断/.test(t)) {
+    return { mode: "now", explicit: false };
+  }
   return { mode: null, explicit: false };
 }
 
@@ -183,13 +189,15 @@ function heuristicExtract(text: string): Partial<ExtractedTurn> {
     else if (n >= 16 && n <= 90) birthYear = new Date().getFullYear() - n;
   }
 
-  const lots = t.match(/(?:摇卦|摇个|号码|数字|求签)[^\d]{0,4}(\d{3})/) ?? (/^\d{3}$/.test(t) ? [t, t] : null);
-  const lotsCode = lots ? lots[1] : null;
-
-  let fortuneSpan: "day" | "month" | "year" | null = null;
-  if (/年运|今年运|这一年/.test(t)) fortuneSpan = "year";
-  else if (/月运|这个月|本月运/.test(t)) fortuneSpan = "month";
-  else if (/日运|今天运|今日运/.test(t)) fortuneSpan = "day";
+  const fortune = parseFortuneRelative(t);
+  const lotsHint = /(?:摇卦|摇个|号码|数字|求签|摇签)/.test(t) && !fortune.span;
+  const lots =
+    /^\d{3}$/.test(t) || lotsHint
+      ? (t.match(/(?:摇卦|摇个|号码|数字|求签)[^\d]{0,4}(\d{3})/) ?? (/^\d{3}$/.test(t) ? [t, t] : null))
+      : null;
+  const lotsCode = fortune.span ? null : lots ? lots[1] : null;
+  const fortuneSpan = fortune.span;
+  const civilHint = fortune.civil;
 
   const declined =
     /不[用想要]说|不想填|先不用资料|你看着来|随便吧|保密|跳过资料|按通用/.test(t) ||
@@ -221,13 +229,14 @@ function heuristicExtract(text: string): Partial<ExtractedTurn> {
   const chitchatOnly = /^(你好|在吗|嗯|好的|谢谢|早|晚安)$/.test(t);
   const hasQuestion =
     Boolean(eventId || lotsCode || fortuneSpan || mode.mode) ||
-    (t.length >= 4 && /看|问|测|算|盘|运|回款|面试/.test(t) && !chitchatOnly);
+    (t.length >= 4 && /看|问|测|算|盘|运|回款|面试|预测|运势/.test(t) && !chitchatOnly);
 
   return {
     gender,
     birthYear,
     lotsCode,
     fortuneSpan,
+    civil: civilHint,
     declinedProfile: Boolean(declined),
     eventId,
     location: parsePlace(t),
@@ -279,7 +288,7 @@ export async function extractTurn(input: {
         ? "ask_question"
         : "chitchat",
     eventId: heuristic.eventId ?? input.eventId,
-    civil: null,
+    civil: heuristic.civil ?? null,
     lotsCode: heuristic.lotsCode ?? null,
     fortuneSpan: heuristic.fortuneSpan ?? null,
     question: input.text,
@@ -309,12 +318,13 @@ kind：
 - chitchat：寒暄、情绪倾诉、和生活有关但不是起盘
 测法 modeGuess 只能是 now|timed|fortune|lots|null：
 - now：按当前时辰
-- timed：用户指定某个时间
-- fortune：年运、月运或日运
-- lots：摇卦求签，要三位数
-modeExplicit 为 true 表示用户已经点明测法（说了此刻/指定时间/运势/摇卦或三位数），不必再问。
+- timed：用户指定某个钟点（如明天下午三点），不是「下个月运势」
+- fortune：年运、月运或日运。『下个月运势/这个月运/明年运』一律 fortune，civil 要挪到对应月份或年份，绝不是求签
+- lots：仅当用户明确说摇卦、求签、或单独报了一个三位数
+modeExplicit 为 true 表示用户已经点明测法，不必再问。
+『下个月』『下月运势』不要当成求签，也不要问三位数。
 eventId 只能是：${EVENT_HINT}。没有把握则 ${input.eventId ?? "null"}。
-civil 为北京时间 {year,month,day,hour,minute}，没提时间则为 null。今天大约 ${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}。
+civil 为北京时间 {year,month,day,hour,minute}。今天大约 ${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}。下个月就把 month+1（12 月则 year+1, month=1）。没提时间则为 null。
 location 形如 {province,city,district}，用户没提城市则为 null。
 gender 为 male|female|null。birthYear 为四位数字或 null。
 当前模式：${input.mode}；事项：${input.eventId ?? "无"}；等确认新盘：${input.hasPending ? "是" : "否"}；等补资料：${input.awaitingProfile ? "是" : "否"}；等选测法：${input.awaitingMode ? "是" : "否"}；等待补充：${input.awaitingKind ?? "无"}。`;
@@ -366,24 +376,39 @@ gender 为 male|female|null。birthYear 为四位数字或 null。
     const birthYear =
       birthYearNum >= 1920 && birthYearNum <= 2030 ? birthYearNum : (heuristic.birthYear ?? null);
     const lots =
-      typeof obj.lotsCode === "string" && /^\d{3}$/.test(obj.lotsCode)
-        ? obj.lotsCode
-        : (heuristic.lotsCode ?? null);
+      heuristic.fortuneSpan
+        ? null
+        : typeof obj.lotsCode === "string" && /^\d{3}$/.test(obj.lotsCode)
+          ? obj.lotsCode
+          : (heuristic.lotsCode ?? null);
     const span =
-      obj.fortuneSpan === "day" || obj.fortuneSpan === "month" || obj.fortuneSpan === "year"
+      heuristic.fortuneSpan ??
+      (obj.fortuneSpan === "day" || obj.fortuneSpan === "month" || obj.fortuneSpan === "year"
         ? obj.fortuneSpan
-        : (heuristic.fortuneSpan ?? null);
+        : null);
     const hasQuestion =
       obj.hasQuestion === true || obj.hasQuestion === false ? Boolean(obj.hasQuestion) : fallback.hasQuestion;
-    const modeGuess = asCastMode(obj.modeGuess) ?? heuristic.modeGuess ?? null;
+    const modeGuess = heuristic.fortuneSpan
+      ? "fortune"
+      : (asCastMode(obj.modeGuess) ?? heuristic.modeGuess ?? null);
     const modeExplicit =
-      obj.modeExplicit === true || obj.modeExplicit === false
+      Boolean(heuristic.fortuneSpan) ||
+      (obj.modeExplicit === true || obj.modeExplicit === false
         ? Boolean(obj.modeExplicit)
-        : Boolean(heuristic.modeExplicit);
+        : Boolean(heuristic.modeExplicit));
+    const civil = heuristic.civil ?? parseCivil(obj.civil);
     return {
-      kind: kinds.includes(kind) ? kind : fallback.kind,
+      kind: heuristic.fortuneSpan
+        ? kinds.includes(kind) && kind !== "chitchat" && kind !== "new_lots"
+          ? kind === "pick_mode"
+            ? "fortune"
+            : kind
+          : "fortune"
+        : kinds.includes(kind)
+          ? kind
+          : fallback.kind,
       eventId,
-      civil: parseCivil(obj.civil),
+      civil,
       lotsCode: lots,
       fortuneSpan: span,
       question: String(obj.question ?? input.text).slice(0, 500),
@@ -402,8 +427,8 @@ gender 为 male|female|null。birthYear 为四位数字或 null。
 }
 
 export function inferMode(extracted: ExtractedTurn, current: SessionMode): SessionMode {
-  if (extracted.lotsCode || extracted.modeGuess === "lots") return "lots";
   if (extracted.fortuneSpan || extracted.kind === "fortune" || extracted.modeGuess === "fortune") return "fortune";
+  if (extracted.lotsCode || extracted.modeGuess === "lots") return "lots";
   if (extracted.civil || extracted.modeGuess === "timed") return "timed";
   if (extracted.modeGuess === "now") return "now";
   if (current === "inbox") return "now";
@@ -416,8 +441,31 @@ export function shouldOpenNewTimeChart(
   asked: CivilTime | null,
 ): boolean {
   if (mode === "lots" || mode === "inbox") return false;
+  if (mode === "fortune") return false;
   if (!asked || !chartCivil?.year) return false;
   return !sameShichen(chartCivil, asked);
+}
+
+export function shouldOpenNewFortuneChart(
+  mode: SessionMode,
+  currentSpan: string | null,
+  currentCivil: CivilTime | null,
+  nextSpan: "day" | "month" | "year" | null,
+  nextCivil: CivilTime | null,
+): boolean {
+  if (!nextSpan) return false;
+  if (mode !== "fortune") return true;
+  if (currentSpan && currentSpan !== nextSpan) return true;
+  if (!nextCivil || !currentCivil?.year) return false;
+  if (nextSpan === "year") return nextCivil.year !== currentCivil.year;
+  if (nextSpan === "month") {
+    return nextCivil.year !== currentCivil.year || nextCivil.month !== currentCivil.month;
+  }
+  return (
+    nextCivil.year !== currentCivil.year ||
+    nextCivil.month !== currentCivil.month ||
+    nextCivil.day !== currentCivil.day
+  );
 }
 
 export function shouldOpenNewLotsChart(

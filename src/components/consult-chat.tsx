@@ -1,5 +1,6 @@
 import { ArrowUp } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -59,6 +60,11 @@ export function ConsultChat({
             )}
           >
             {m.content}
+            {m.kind === "paywall" ? (
+              <Link to="/wallet" className="mt-2 block text-cinnabar underline-offset-4 hover:underline">
+                去充值
+              </Link>
+            ) : null}
           </div>
         ))}
         {busy ? <p className="text-xs text-faint">我在想，稍等一会儿…</p> : null}

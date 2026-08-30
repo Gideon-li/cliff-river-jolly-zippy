@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EVENT_NAME, type EventId } from "@/lib/app-types";
-import { adminRecentSessions, adminUpdateUser, getAdminOverview, listAdminUsers } from "@/lib/fn/admin";
+import { adminRecentPayments, adminRecentSessions, adminUpdateUser, getAdminOverview, listAdminUsers } from "@/lib/fn/admin";
 import { bootstrapAuth } from "@/lib/fn/profile";
 
 export const Route = createFileRoute("/admin")({ component: AdminPage });
@@ -80,14 +80,21 @@ function AdminDesk() {
   const [overview, setOverview] = useState<Awaited<ReturnType<typeof getAdminOverview>> | null>(null);
   const [users, setUsers] = useState<Awaited<ReturnType<typeof listAdminUsers>> | null>(null);
   const [recent, setRecent] = useState<Awaited<ReturnType<typeof adminRecentSessions>> | null>(null);
+  const [payments, setPayments] = useState<Awaited<ReturnType<typeof adminRecentPayments>> | null>(null);
   const [denied, setDenied] = useState("");
 
   async function reload() {
     try {
-      const [o, u, r] = await Promise.all([getAdminOverview(), listAdminUsers(), adminRecentSessions()]);
+      const [o, u, r, p] = await Promise.all([
+        getAdminOverview(),
+        listAdminUsers(),
+        adminRecentSessions(),
+        adminRecentPayments(),
+      ]);
       setOverview(o);
       setUsers(u);
       setRecent(r);
+      setPayments(p);
     } catch (e) {
       setDenied(e instanceof Error ? e.message : "无法进入后台");
     }
@@ -136,8 +143,12 @@ function AdminDesk() {
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
           <Stat label="用户" value={overview.users} />
           <Stat label="起盘" value={overview.sessions} />
-          <Stat label="问答" value={overview.messages} />
           <Stat label="今日起盘" value={overview.today} />
+          <Stat label="充值到账" value={overview.revenueYuan} suffix="元" />
+          <Stat label="付费笔数" value={overview.paidCount} />
+          <Stat label="月租用户" value={overview.monthly} />
+          <Stat label="永久免费" value={overview.lifetime} />
+          <Stat label="问答" value={overview.messages} />
         </div>
 
         <Card>
@@ -192,8 +203,9 @@ function AdminDesk() {
                 <th className="px-4 py-2">昵称</th>
                 <th className="px-4 py-2">账号</th>
                 <th className="px-4 py-2">性别 / 年</th>
+                <th className="px-4 py-2">权益</th>
                 <th className="px-4 py-2">起盘</th>
-                <th className="px-4 py-2">状态</th>
+                <th className="px-4 py-2">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -204,22 +216,74 @@ function AdminDesk() {
                   <td className="px-4 py-2 text-muted">
                     {u.gender === "female" ? "女" : u.gender === "male" ? "男" : "—"} {u.birth_year ?? ""}
                   </td>
+                  <td className="px-4 py-2 text-xs text-muted">
+                    {u.lifetime_free || u.plan === "lifetime"
+                      ? "永久免费"
+                      : u.plan === "monthly"
+                        ? `月租${u.plan_until ? `至 ${new Date(u.plan_until).toISOString().slice(0, 10)}` : ""}`
+                        : `按次 ${u.credits ?? 0}`}
+                  </td>
                   <td className="px-4 py-2 tabular-nums">{u.sessions}</td>
                   <td className="px-4 py-2">
-                    <button
-                      type="button"
-                      className="text-xs text-cinnabar"
-                      onClick={() =>
-                        void adminUpdateUser({ data: { userId: u.id, disabled: !u.disabled } }).then(() => reload())
-                      }
-                    >
-                      {u.disabled ? "已停用 · 恢复" : "停用"}
-                    </button>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="text-xs text-cinnabar"
+                        onClick={() =>
+                          void adminUpdateUser({ data: { userId: u.id, creditsDelta: 10 } }).then(() => reload())
+                        }
+                      >
+                        +10次
+                      </button>
+                      <button
+                        type="button"
+                        className="text-xs text-cinnabar"
+                        onClick={() =>
+                          void adminUpdateUser({ data: { userId: u.id, plan: "monthly" } }).then(() => reload())
+                        }
+                      >
+                        月租
+                      </button>
+                      <button
+                        type="button"
+                        className="text-xs text-cinnabar"
+                        onClick={() =>
+                          void adminUpdateUser({ data: { userId: u.id, lifetime: true } }).then(() => reload())
+                        }
+                      >
+                        永久免费
+                      </button>
+                      <button
+                        type="button"
+                        className="text-xs text-muted"
+                        onClick={() =>
+                          void adminUpdateUser({ data: { userId: u.id, disabled: !u.disabled } }).then(() => reload())
+                        }
+                      >
+                        {u.disabled ? "恢复" : "停用"}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </Card>
+
+        <Card>
+          <p className="font-display text-lg">充值订单</p>
+          <ul className="mt-3 space-y-2 text-sm">
+            {(payments ?? []).length === 0 ? <li className="text-muted">暂无订单</li> : null}
+            {(payments ?? []).map((p) => (
+              <li key={p.id} className="flex justify-between gap-3 border-b border-line pb-2">
+                <span>
+                  {p.nickname || p.email} · {p.channel === "wechat" ? "微信" : p.channel === "alipay" ? "支付宝" : "管理员"} ·{" "}
+                  {(p.amount_fen / 100).toFixed(0)} 元 · {p.status === "paid" ? "已到账" : "待支付"}
+                </span>
+                <span className="shrink-0 text-xs text-faint">{dayTime(p.created_at)}</span>
+              </li>
+            ))}
+          </ul>
         </Card>
 
         <Card>
@@ -230,7 +294,7 @@ function AdminDesk() {
                 <span>
                   {s.nickname || s.email} · {s.mode} · {s.ju_label}
                 </span>
-                <span className="shrink-0 text-xs text-faint">{String(s.created_at).slice(0, 16)}</span>
+                <span className="shrink-0 text-xs text-faint">{dayTime(s.created_at)}</span>
               </li>
             ))}
           </ul>
@@ -240,11 +304,20 @@ function AdminDesk() {
   );
 }
 
-function Stat({ label, value }: { label: string; value: number }) {
+function dayTime(v: string) {
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return String(v).slice(0, 16);
+  return d.toISOString().slice(0, 16).replace("T", " ");
+}
+
+function Stat({ label, value, suffix }: { label: string; value: number; suffix?: string }) {
   return (
     <Card>
       <p className="text-xs text-muted">{label}</p>
-      <p className="mt-2 font-display text-3xl tabular-nums">{value}</p>
+      <p className="mt-2 font-display text-3xl tabular-nums">
+        {value}
+        {suffix ? <span className="ml-1 text-base text-muted">{suffix}</span> : null}
+      </p>
     </Card>
   );
 }

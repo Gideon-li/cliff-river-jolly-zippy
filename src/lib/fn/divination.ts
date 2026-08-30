@@ -25,14 +25,18 @@ import {
   needTimePrompt,
   readPortrait,
   refreshPortrait,
+  shouldOpenNewFortuneChart,
   shouldOpenNewLotsChart,
   shouldOpenNewTimeChart,
   sisterSay,
+  beijingNowCivil,
+  parseFortuneRelative,
   type CastMode,
   type ExtractedTurn,
 } from "@/lib/agent.server";
 import { resolveLocation } from "@/lib/location.server";
 import { runLots, runScan, type QueryBody } from "@/lib/qimen.server";
+import { NeedPayError, consumeCast } from "@/lib/fn/billing";
 import { hourNameOf, shichenRangeLabel } from "@/lib/shichen";
 import { newId, type JsonValue } from "@/lib/utils";
 
@@ -330,33 +334,41 @@ async function fillChart(opts: {
   fortuneSpan?: "day" | "month" | "year" | null;
   question: string;
 }) {
-  const now = new Date();
+  const now = beijingNowCivil();
   let lots = null as { ju: number; steps: string[]; code: string } | null;
   if (opts.mode === "lots") {
     const code = opts.lotsCode ?? "";
     if (!/^\d{3}$/.test(code)) throw new Error("摇卦需要一个三位数");
     lots = (await runLots(code)) as { ju: number; steps: string[]; code: string };
   }
+  const fortuneSpan = opts.fortuneSpan ?? (opts.mode === "fortune" ? "month" : null);
+  const civilInput =
+    opts.mode === "timed" || opts.mode === "fortune" ? (opts.civil ?? now) : undefined;
   const body = bodyFrom({
     profile: opts.profile,
     loc: opts.loc.province ? opts.loc : BEIJING_LOCATION,
-    civil: opts.mode === "timed" ? opts.civil : undefined,
+    civil: civilInput,
     eventId: opts.eventId,
     casting: opts.mode === "lots" ? "lots" : "chaibu",
     lotsCode: lots?.code ?? opts.lotsCode,
-    lotsMonth: (opts.civil?.month ?? now.getMonth() + 1) as number,
+    lotsMonth: (civilInput?.month ?? now.month) as number,
     question: opts.question,
   });
+  await consumeCast(opts.userId, opts.sessionId);
   const scan = await runScan(body);
   const civil = civilOf(scan);
   const chart = asObj(asObj(scan).chart ?? null) as { hourName?: string; ju?: { label?: string } };
-  const juLabel = chart.ju?.label ?? "";
+  const spanName = fortuneSpan === "year" ? "年运" : fortuneSpan === "day" ? "日运" : "月运";
+  const juLabel =
+    opts.mode === "fortune" && civilInput
+      ? `${civilInput.year}年${civilInput.month}月${spanName}${chart.ju?.label ? ` · ${chart.ju.label}` : ""}`
+      : (chart.ju?.label ?? "");
   const hourName = chart.hourName ?? hourNameOf(civil.hour);
   const sql = await getSql();
   await sql`
     update divination_sessions set
       mode = ${opts.mode},
-      fortune_span = ${opts.fortuneSpan ?? (opts.mode === "fortune" ? "day" : null)},
+      fortune_span = ${fortuneSpan},
       lots_code = ${lots?.code ?? opts.lotsCode ?? null},
       event_id = ${opts.eventId},
       civil_year = ${civil.year},
@@ -372,6 +384,12 @@ async function fillChart(opts: {
       pending_json = null
     where id = ${opts.sessionId} and user_id = ${opts.userId}
   `;
+  const fortunePack = asObj(asObj(scan).fortune ?? null);
+  const period = fortuneSpan ? asObj(fortunePack[fortuneSpan] ?? null) : null;
+  const periodLine =
+    opts.mode === "fortune" && civilInput
+      ? `${civilInput.year}年${civilInput.month}月${fortuneSpan === "year" ? "年运" : fortuneSpan === "day" ? "日运" : "月运"}。${period?.reading ? String(period.reading) : ""}`
+      : "";
   const allowPlace = isPreciseLocation(opts.loc);
   const text = await sisterSay({
     question: opts.question,
@@ -382,6 +400,7 @@ async function fillChart(opts: {
     allowPlace,
     place: allowPlace ? `${opts.loc.city}` : undefined,
     portrait: opts.profile.portrait,
+    extra: periodLine || undefined,
   });
   await insertMessage(opts.sessionId, opts.userId, "assistant", text, "compose");
   return loadPacked(opts.sessionId, opts.userId);
@@ -500,8 +519,10 @@ function resolvePickedMode(
   yes: boolean,
   text: string,
 ): CastMode | null {
+  if (extracted.fortuneSpan || extracted.kind === "fortune" || extracted.modeGuess === "fortune") {
+    return "fortune";
+  }
   if (extracted.lotsCode) return "lots";
-  if (extracted.fortuneSpan || extracted.kind === "fortune") return "fortune";
   if (extracted.civil && extracted.modeGuess !== "now") return "timed";
   if (extracted.modeExplicit && extracted.modeGuess) return extracted.modeGuess;
   if (extracted.kind === "pick_mode" && extracted.modeGuess) return extracted.modeGuess;
@@ -750,14 +771,31 @@ export const sendConsult = createServerFn({ method: "POST" })
     const no = isNo(data.text, extracted.kind);
     const hasChart = Boolean(session.ju_label);
     const nextEvent = (extracted.eventId ?? pending?.eventId ?? (session.event_id as EventId) ?? "wealth") as EventId;
-    let fortuneSpan = extracted.fortuneSpan ?? pending?.fortuneSpan ?? null;
-    if (pending?.kind === "need_span" && yes && !fortuneSpan) fortuneSpan = "day";
-    const lotsCode = extracted.lotsCode ?? pending?.lotsCode ?? null;
-    const civil = extracted.civil ?? pending?.civil ?? undefined;
+    const fortuneFirst = Boolean(
+      extracted.fortuneSpan || extracted.kind === "fortune" || extracted.modeGuess === "fortune",
+    );
+    const lotsCode = fortuneFirst ? null : (extracted.lotsCode ?? pending?.lotsCode ?? null);
+    let civil = extracted.civil ?? pending?.civil ?? undefined;
     const question = extracted.question || pending?.question || data.text;
     const declined =
-      extracted.declinedProfile || extracted.kind === "decline_profile" || Boolean(pending?.declined);
+      extracted.declinedProfile ||
+      extracted.kind === "decline_profile" ||
+      Boolean(pending?.declined) ||
+      Boolean(extracted.fortuneSpan || extracted.lotsCode || extracted.modeExplicit);
     const picked = resolvePickedMode(extracted, pending, yes, data.text);
+    let fortuneSpan = extracted.fortuneSpan ?? pending?.fortuneSpan ?? null;
+    if (pending?.kind === "need_span" && yes && !fortuneSpan) fortuneSpan = "day";
+    if (
+      !fortuneSpan &&
+      (extracted.kind === "fortune" || extracted.modeGuess === "fortune" || picked === "fortune")
+    ) {
+      fortuneSpan = "month";
+    }
+    if ((picked === "fortune" || fortuneSpan) && !civil?.year) {
+      const rel = parseFortuneRelative(data.text);
+      civil = rel.civil ?? beijingNowCivil();
+      if (!extracted.fortuneSpan && rel.span) fortuneSpan = rel.span;
+    }
 
     const comfort = async () => {
       const text = await companionSay({
@@ -769,21 +807,42 @@ export const sendConsult = createServerFn({ method: "POST" })
       return replyText(session.id, context.userId, text, "chat");
     };
 
-    const cast = (mode: CastMode, openNew = hasChart) =>
-      proceedCast({
-        userId: context.userId,
-        session,
-        profile,
-        loc,
-        mode,
-        eventId: nextEvent,
-        civil,
-        lotsCode,
-        fortuneSpan,
-        question,
-        declined,
-        openNew,
-      });
+    const paywall = (err: unknown) => {
+      const msg =
+        err instanceof NeedPayError || (err instanceof Error && err.name === "NeedPayError")
+          ? err.message
+          : "这一问需要扣 1 次。次数不够的话，去「充值」买次数或开通月租。";
+      return replyText(session.id, context.userId, msg, "paywall");
+    };
+
+    const cast = async (mode: CastMode, openNew = hasChart) => {
+      try {
+        return await proceedCast({
+          userId: context.userId,
+          session,
+          profile,
+          loc,
+          mode,
+          eventId: nextEvent,
+          civil,
+          lotsCode,
+          fortuneSpan,
+          question,
+          declined,
+          openNew,
+        });
+      } catch (err) {
+        if (err instanceof NeedPayError || (err instanceof Error && err.name === "NeedPayError")) {
+          return paywall(err);
+        }
+        throw err;
+      }
+    };
+
+    const autoMode = (): CastMode =>
+      picked ||
+      asCastMode(inferMode(extracted, session.mode as SessionMode)) ||
+      "now";
 
     if (pending?.kind === "new_chart" && yes) {
       await writePending(session.id, context.userId, null);
@@ -792,20 +851,7 @@ export const sendConsult = createServerFn({ method: "POST" })
         asCastMode(pending.mode) ||
         asCastMode(inferMode(extracted, session.mode as SessionMode)) ||
         "now";
-      return proceedCast({
-        userId: context.userId,
-        session,
-        profile,
-        loc,
-        mode,
-        eventId: pending.eventId || nextEvent,
-        civil: pending.civil ?? civil,
-        lotsCode: pending.lotsCode ?? lotsCode,
-        fortuneSpan: pending.fortuneSpan ?? fortuneSpan,
-        question: pending.question || question,
-        declined,
-        openNew: true,
-      });
+      return cast(mode, true);
     }
     if (pending?.kind === "new_chart" && no) {
       await writePending(session.id, context.userId, null);
@@ -815,6 +861,15 @@ export const sendConsult = createServerFn({ method: "POST" })
         "好，咱们继续看这一盘。你把想问的细节再说说就行。",
         "system",
       );
+    }
+    if (pending?.kind === "new_chart" && wantsReading(extracted)) {
+      await writePending(session.id, context.userId, null);
+      const mode =
+        picked ||
+        asCastMode(pending.mode) ||
+        asCastMode(inferMode(extracted, session.mode as SessionMode)) ||
+        "now";
+      return cast(mode, true);
     }
 
     if (pending?.kind === "need_profile") {
@@ -843,24 +898,7 @@ export const sendConsult = createServerFn({ method: "POST" })
       if (picked) return cast(picked, hasChart);
       const confirmed = asCastMode(pending.mode);
       if (yes && confirmed) return cast(confirmed, hasChart);
-      if (wantsReading(extracted) && !picked) {
-        await writePending(session.id, context.userId, {
-          kind: "need_mode",
-          mode: extracted.modeGuess ?? pending.mode,
-          eventId: nextEvent,
-          civil,
-          question,
-          lotsCode: lotsCode ?? undefined,
-          fortuneSpan: fortuneSpan ?? undefined,
-          declined,
-        });
-        return replyText(
-          session.id,
-          context.userId,
-          modeChoicePrompt(extracted.modeGuess ?? asCastMode(pending.mode), question),
-          "system",
-        );
-      }
+      if (wantsReading(extracted)) return cast(autoMode(), hasChart);
       return comfort();
     }
 
@@ -872,24 +910,11 @@ export const sendConsult = createServerFn({ method: "POST" })
         const left = gapsOf(profile, loc);
         const text = hasGaps(left)
           ? missingProfilePrompt(left)
-          : "资料我记下了。想问哪件事，直接说就好。看盘的话先选一种测法：此刻、指定时间、年月日运，或摇个三位数。";
+          : "资料我记下了。想问哪件事，直接说就好。";
         return replyText(session.id, context.userId, text, "system");
       }
       if (!wantsReading(extracted)) return comfort();
-      if (!picked) {
-        await writePending(session.id, context.userId, {
-          kind: "need_mode",
-          mode: extracted.modeGuess ?? undefined,
-          eventId: nextEvent,
-          civil,
-          question,
-          lotsCode: lotsCode ?? undefined,
-          fortuneSpan: fortuneSpan ?? undefined,
-          declined,
-        });
-        return replyText(session.id, context.userId, modeChoicePrompt(extracted.modeGuess, question), "system");
-      }
-      return cast(picked, false);
+      return cast(autoMode(), false);
     }
 
     if (!wantsReading(extracted) && extracted.kind !== "followup" && extracted.kind !== "ask_question") {
@@ -897,9 +922,42 @@ export const sendConsult = createServerFn({ method: "POST" })
     }
 
     const timeShift = shouldOpenNewTimeChart(session.mode as SessionMode, chartCivil, extracted.civil);
+    const fortuneShift = shouldOpenNewFortuneChart(
+      session.mode as SessionMode,
+      session.fortune_span,
+      chartCivil,
+      fortuneSpan,
+      civil ?? null,
+    );
     const lotsShift = shouldOpenNewLotsChart(session.mode as SessionMode, session.event_id as EventId, nextEvent);
     const modeShift = Boolean(picked && picked !== session.mode);
     const eventShift = extracted.kind === "new_event" && nextEvent !== session.event_id;
+
+    if (fortuneShift) {
+      await writePending(session.id, context.userId, {
+        kind: "new_chart",
+        mode: "fortune",
+        eventId: nextEvent,
+        civil,
+        fortuneSpan: fortuneSpan ?? undefined,
+        question,
+      });
+      const when =
+        civil && fortuneSpan === "month"
+          ? `${civil.year}年${civil.month}月`
+          : civil && fortuneSpan === "year"
+            ? `${civil.year}年`
+            : fortuneSpan === "day"
+              ? "那一天"
+              : "新的运势";
+      return replyText(
+        session.id,
+        context.userId,
+        `这一盘还在当前时段里。你要看的是${when}的运势，已经超出这一盘。要不要按新的时间再起一盘？说「好」我就起，想继续问这一盘也可以。`,
+        "confirm",
+        { type: "confirm" },
+      );
+    }
 
     if (timeShift && extracted.civil) {
       await writePending(session.id, context.userId, {
@@ -919,22 +977,10 @@ export const sendConsult = createServerFn({ method: "POST" })
     }
 
     if (lotsShift || modeShift || eventShift) {
-      if (!picked) {
-        await writePending(session.id, context.userId, {
-          kind: "need_mode",
-          mode: extracted.modeGuess ?? undefined,
-          eventId: nextEvent,
-          civil,
-          question,
-          lotsCode: lotsCode ?? undefined,
-          fortuneSpan: fortuneSpan ?? undefined,
-          declined,
-        });
-        return replyText(session.id, context.userId, modeChoicePrompt(extracted.modeGuess, question), "system");
-      }
+      const nextMode = picked || autoMode();
       await writePending(session.id, context.userId, {
         kind: "new_chart",
-        mode: picked,
+        mode: nextMode,
         eventId: nextEvent,
         civil,
         lotsCode: lotsCode ?? undefined,
@@ -944,7 +990,7 @@ export const sendConsult = createServerFn({ method: "POST" })
       return replyText(
         session.id,
         context.userId,
-        `这一盘是「${EVENT_NAME[(session.event_id as EventId) || "wealth"]}」。你这次想另起一盘的话，说「好」我就按新的测法来；想继续问这一盘，说一声就行。`,
+        `这一盘是「${EVENT_NAME[(session.event_id as EventId) || "wealth"]}」。超出这一盘的范围了。要不要另起一盘？说「好」我就按新的来；想继续问这一盘，说一声就行。`,
         "confirm",
         { type: "confirm" },
       );

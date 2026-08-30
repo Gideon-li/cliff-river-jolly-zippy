@@ -4,6 +4,7 @@ import { getSql } from "@/lib/db";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { ADMIN_EMAIL } from "@/lib/app-types";
 import { ensureAdmin } from "./profile";
+import { grantPlan, readWallet } from "./billing";
 
 async function requireAdmin(userId: string) {
   await ensureAdmin();
@@ -33,6 +34,19 @@ export const getAdminOverview = createServerFn({ method: "GET" })
       select count(*)::int as count from divination_sessions
       where created_at >= date_trunc('day', now())
     `;
+    const revenue = await sql<{ fen: number }>`
+      select coalesce(sum(amount_fen), 0)::int as fen from payments where status = ${"paid"}
+    `;
+    const paidCount = await sql<{ count: number }>`
+      select count(*)::int as count from payments where status = ${"paid"}
+    `;
+    const monthly = await sql<{ count: number }>`
+      select count(*)::int as count from profiles
+      where plan = ${"monthly"} and plan_until is not null and plan_until > now()
+    `;
+    const lifetime = await sql<{ count: number }>`
+      select count(*)::int as count from profiles where lifetime_free = true or plan = ${"lifetime"}
+    `;
     const byMode = await sql<{ mode: string; count: number }>`
       select mode, count(*)::int as count
       from divination_sessions group by mode order by count desc
@@ -52,6 +66,10 @@ export const getAdminOverview = createServerFn({ method: "GET" })
       sessions: sessions[0]?.count ?? 0,
       messages: messages[0]?.count ?? 0,
       today: today[0]?.count ?? 0,
+      revenueYuan: Math.round((revenue[0]?.fen ?? 0) / 100),
+      paidCount: paidCount[0]?.count ?? 0,
+      monthly: monthly[0]?.count ?? 0,
+      lifetime: lifetime[0]?.count ?? 0,
       byMode,
       byEvent,
       daily,
@@ -75,12 +93,17 @@ export const listAdminUsers = createServerFn({ method: "GET" })
       city: string | null;
       is_admin: boolean | null;
       disabled: boolean | null;
+      plan: string | null;
+      plan_until: string | null;
+      credits: number | null;
+      lifetime_free: boolean | null;
       sessions: number;
       messages: number;
     }>`
       select
         u.id, u.name, u.email, u."createdAt",
         p.nickname, p.gender, p.birth_year, p.province, p.city, p.is_admin, p.disabled,
+        p.plan, p.plan_until, p.credits, p.lifetime_free,
         coalesce(s.n, 0)::int as sessions,
         coalesce(m.n, 0)::int as messages
       from "user" u
@@ -102,6 +125,9 @@ export const adminUpdateUser = createServerFn({ method: "POST" })
       userId: z.string().min(1),
       nickname: z.string().trim().max(32).optional(),
       disabled: z.boolean().optional(),
+      creditsDelta: z.number().int().min(-999).max(999).optional(),
+      plan: z.enum(["payg", "monthly", "lifetime"]).optional(),
+      lifetime: z.boolean().optional(),
     }),
   )
   .handler(async ({ context, data }) => {
@@ -122,7 +148,26 @@ export const adminUpdateUser = createServerFn({ method: "POST" })
         updated_at = now()
       where user_id = ${data.userId}
     `;
-    return { ok: true as const };
+    if (data.creditsDelta || data.plan || data.lifetime) {
+      await grantPlan(
+        data.userId,
+        {
+          creditsDelta: data.creditsDelta,
+          plan: data.plan,
+          lifetime: data.lifetime || data.plan === "lifetime",
+        },
+        "管理员操作",
+      );
+    }
+    const row = await sql<{
+      plan: string | null;
+      plan_until: string | null;
+      credits: number | null;
+      lifetime_free: boolean | null;
+    }>`
+      select plan, plan_until, credits, lifetime_free from profiles where user_id = ${data.userId} limit 1
+    `;
+    return { ok: true as const, wallet: readWallet(row[0] ?? {}) };
   });
 
 export const adminRecentSessions = createServerFn({ method: "GET" })
@@ -146,5 +191,31 @@ export const adminRecentSessions = createServerFn({ method: "GET" })
       left join "user" u on u.id = d.user_id
       order by d.created_at desc
       limit 30
+    `;
+  });
+
+export const adminRecentPayments = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .handler(async ({ context }) => {
+    await requireAdmin(context.userId);
+    const sql = await getSql();
+    return sql<{
+      id: string;
+      user_id: string;
+      nickname: string | null;
+      email: string | null;
+      channel: string;
+      sku: string;
+      amount_fen: number;
+      status: string;
+      created_at: string;
+      paid_at: string | null;
+    }>`
+      select p.id, p.user_id, pr.nickname, u.email, p.channel, p.sku, p.amount_fen, p.status, p.created_at, p.paid_at
+      from payments p
+      left join profiles pr on pr.user_id = p.user_id
+      left join "user" u on u.id = p.user_id
+      order by p.created_at desc
+      limit 40
     `;
   });

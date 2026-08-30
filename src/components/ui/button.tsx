@@ -12,6 +12,7 @@ const buttonVariants = cva(
         outline: "border border-line-strong bg-paper-2 text-ink hover:bg-seal",
         ghost: "text-ink-soft hover:bg-seal",
         wechat: "bg-wechat text-white hover:opacity-90",
+        alipay: "bg-alipay text-white hover:opacity-90",
       },
       size: {
         default: "h-11 px-4",

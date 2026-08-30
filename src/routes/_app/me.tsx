@@ -8,6 +8,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { getMyProfile, updateMyProfile } from "@/lib/fn/profile";
+import { getWallet } from "@/lib/fn/billing";
 
 export const Route = createFileRoute("/_app/me")({ component: MePage });
 
@@ -18,16 +19,18 @@ function MePage() {
   const [birthYear, setBirthYear] = useState("");
   const [place, setPlace] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
+  const [planLabel, setPlanLabel] = useState("");
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    void getMyProfile().then((p) => {
+    void Promise.all([getMyProfile(), getWallet().catch(() => null)]).then(([p, w]) => {
       setNickname(p.nickname);
       setGender(p.gender ?? "");
       setBirthYear(p.birthYear ? String(p.birthYear) : "");
       setPlace([p.province, p.city, p.district].filter(Boolean).join(" "));
       setIsAdmin(p.isAdmin);
+      setPlanLabel(w?.wallet.label ?? (p.lifetimeFree ? "永久免费" : `按次 ${p.credits} 次`));
     });
   }, []);
 
@@ -58,6 +61,17 @@ function MePage() {
         <Button variant="outline" size="sm" onClick={() => void signOut("/login")}>
           退出
         </Button>
+      </Card>
+
+      <Card className="mt-4 flex items-center justify-between">
+        <div>
+          <p className="text-xs text-muted">问事权益</p>
+          <p className="mt-1 font-display text-lg">{planLabel || "按次计费"}</p>
+          <p className="mt-1 text-xs text-faint">一次预测 1 元，月租 30 元</p>
+        </div>
+        <Link to="/wallet">
+          <Button size="sm">去充值</Button>
+        </Link>
       </Card>
 
       <Card className="mt-4 space-y-3">

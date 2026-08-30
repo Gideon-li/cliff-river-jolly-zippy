@@ -3,7 +3,7 @@ import { z } from "zod";
 import { hashPassword } from "better-auth/crypto";
 import { getSql } from "@/lib/db";
 import { authMiddleware } from "@/lib/auth/middleware";
-import { ADMIN_EMAIL, ADMIN_PASSWORD, type Gender, type Profile } from "@/lib/app-types";
+import { ADMIN_EMAIL, ADMIN_PASSWORD, type Gender, type PlanKind, type Profile } from "@/lib/app-types";
 import { locateByIp, reverseGeocode } from "@/lib/location.server";
 import { newId } from "@/lib/utils";
 
@@ -18,10 +18,16 @@ type ProfileRow = {
   wechat_openid: string | null;
   is_admin: boolean;
   disabled: boolean;
+  plan: string | null;
+  plan_until: string | null;
+  credits: number | null;
+  lifetime_free: boolean | null;
   created_at: string;
 };
 
 function toProfile(row: ProfileRow, fallbackName = ""): Profile {
+  const lifetime = Boolean(row.lifetime_free) || row.plan === "lifetime";
+  const plan = (lifetime ? "lifetime" : row.plan === "monthly" ? "monthly" : "payg") as PlanKind;
   return {
     userId: row.user_id,
     nickname: row.nickname || fallbackName,
@@ -32,6 +38,10 @@ function toProfile(row: ProfileRow, fallbackName = ""): Profile {
     district: row.district,
     wechatOpenid: row.wechat_openid,
     isAdmin: Boolean(row.is_admin),
+    plan,
+    planUntil: row.plan_until ? String(row.plan_until) : null,
+    credits: Number(row.credits ?? 3),
+    lifetimeFree: lifetime,
     createdAt: String(row.created_at),
   };
 }
@@ -41,9 +51,9 @@ export async function ensureAdmin() {
   const existing = await sql<{ id: string }>`select id from "user" where email = ${ADMIN_EMAIL} limit 1`;
   if (existing[0]) {
     await sql`
-      insert into profiles (user_id, nickname, is_admin)
-      values (${existing[0].id}, ${"管理员"}, ${true})
-      on conflict (user_id) do update set is_admin = true
+      insert into profiles (user_id, nickname, is_admin, lifetime_free, plan, credits)
+      values (${existing[0].id}, ${"管理员"}, ${true}, ${true}, ${"lifetime"}, ${999})
+      on conflict (user_id) do update set is_admin = true, lifetime_free = true, plan = ${"lifetime"}
     `;
     return;
   }
@@ -58,8 +68,8 @@ export async function ensureAdmin() {
     values (${newId()}, ${ADMIN_EMAIL}, ${"credential"}, ${userId}, ${hash}, now(), now())
   `;
   await sql`
-    insert into profiles (user_id, nickname, is_admin)
-    values (${userId}, ${"管理员"}, ${true})
+    insert into profiles (user_id, nickname, is_admin, lifetime_free, plan, credits)
+    values (${userId}, ${"管理员"}, ${true}, ${true}, ${"lifetime"}, ${999})
   `;
 }
 

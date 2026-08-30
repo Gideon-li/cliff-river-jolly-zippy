@@ -1,10 +1,11 @@
 import { Link, useRouterState } from "@tanstack/react-router";
-import { Compass, ScrollText, UserRound } from "lucide-react";
+import { Compass, ScrollText, UserRound, Wallet } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const TABS = [
   { to: "/", label: "问盘", icon: Compass },
   { to: "/history", label: "记录", icon: ScrollText },
+  { to: "/wallet", label: "充值", icon: Wallet },
   { to: "/me", label: "我的", icon: UserRound },
 ] as const;
 
@@ -41,7 +42,7 @@ export function AppShell({
       <main className={cn("flex-1 px-5 py-4", hideTabs ? "pb-8" : "pb-28")}>{children}</main>
       {hideTabs ? null : (
         <nav className="fixed bottom-0 left-1/2 z-20 w-full max-w-[430px] -translate-x-1/2 border-t border-line bg-paper-2/95 backdrop-blur">
-          <ul className="grid grid-cols-3">
+          <ul className="grid grid-cols-4">
             {TABS.map((tab) => {
               const active = tab.to === "/" ? pathname === "/" : pathname.startsWith(tab.to);
               const Icon = tab.icon;
