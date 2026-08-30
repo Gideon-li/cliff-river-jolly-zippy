@@ -1,0 +1,111 @@
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { signOut } from "@/lib/auth/client";
+import { useCurrentUser } from "@/lib/auth/use-current-user";
+import { AppShell } from "@/components/app-shell";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { getMyProfile, updateMyProfile } from "@/lib/fn/profile";
+import { cn } from "@/lib/utils";
+
+export const Route = createFileRoute("/_app/me")({ component: MePage });
+
+function MePage() {
+  const user = useCurrentUser();
+  const [nickname, setNickname] = useState("");
+  const [gender, setGender] = useState<"" | "male" | "female">("");
+  const [birthYear, setBirthYear] = useState("");
+  const [place, setPlace] = useState("");
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    void getMyProfile().then((p) => {
+      setNickname(p.nickname);
+      setGender(p.gender ?? "");
+      setBirthYear(p.birthYear ? String(p.birthYear) : "");
+      setPlace([p.province, p.city, p.district].filter(Boolean).join(" "));
+      setIsAdmin(p.isAdmin);
+    });
+  }, []);
+
+  async function save() {
+    setBusy(true);
+    try {
+      await updateMyProfile({
+        data: {
+          nickname: nickname.trim() || undefined,
+          gender: gender || null,
+          birthYear: birthYear ? Number(birthYear) : null,
+        },
+      });
+      setSaved(true);
+      window.setTimeout(() => setSaved(false), 1500);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <AppShell title="我的">
+      <Card className="flex items-center justify-between gap-3">
+        <div>
+          <p className="font-display text-lg">{nickname || user?.displayName || "问事人"}</p>
+          <p className="text-xs text-muted">{user?.primaryEmail}</p>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => void signOut("/login")}>
+          退出
+        </Button>
+      </Card>
+
+      <Card className="mt-4 space-y-3">
+        <p className="font-display">资料</p>
+        <div className="space-y-1.5">
+          <Label>昵称</Label>
+          <Input value={nickname} onChange={(e) => setNickname(e.target.value)} />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-1.5">
+            <Label>性别</Label>
+            <div className="flex gap-2">
+              {(["male", "female"] as const).map((g) => (
+                <button
+                  key={g}
+                  type="button"
+                  onClick={() => setGender(g)}
+                  className={cn(
+                    "h-11 flex-1 rounded-[var(--radius-sm)] border text-sm",
+                    gender === g ? "border-cinnabar bg-seal text-cinnabar" : "border-line text-muted",
+                  )}
+                >
+                  {g === "male" ? "男" : "女"}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label>出生年</Label>
+            <Input
+              inputMode="numeric"
+              value={birthYear}
+              onChange={(e) => setBirthYear(e.target.value.replace(/\D/g, "").slice(0, 4))}
+            />
+          </div>
+        </div>
+        {place ? <p className="text-xs text-muted">最近位置 {place}</p> : null}
+        <Button className="w-full" disabled={busy} onClick={() => void save()}>
+          {saved ? "已保存" : "保存"}
+        </Button>
+      </Card>
+
+      {isAdmin ? (
+        <Link to="/admin" className="mt-4 block text-center text-sm text-cinnabar">
+          进入管理后台
+        </Link>
+      ) : null}
+    </AppShell>
+  );
+}

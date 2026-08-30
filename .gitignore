@@ -1,0 +1,13 @@
+node_modules
+.vercel
+.output
+dist
+data/qimen-config.json
+data/*.json
+screenshots
+*.log
+.grok
+src/routeTree.gen.ts
+.DS_Store
+artifacts
+.project_id
