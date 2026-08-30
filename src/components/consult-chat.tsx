@@ -66,7 +66,7 @@ export function ConsultChat({
       </div>
 
       <form
-        className="sticky bottom-24 z-10 mt-4 flex gap-2 rounded-[var(--radius-xl)] border border-line bg-paper-2 p-2"
+        className="sticky bottom-24 z-10 mt-4 rounded-[var(--radius-xl)] border border-line bg-paper-2 p-2"
         onSubmit={(e) => {
           e.preventDefault();
           const q = text.trim();
@@ -75,15 +75,18 @@ export function ConsultChat({
           onSend(q);
         }}
       >
-        <Input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="想问什么，直接说就好"
-          className="border-0 bg-transparent focus:ring-0"
-        />
-        <Button type="submit" size="icon" disabled={busy || !text.trim()} aria-label="发送">
-          <ArrowUp className="size-4" />
-        </Button>
+        <div className="flex gap-2">
+          <Input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="想问什么，直接说就好"
+            className="border-0 bg-transparent focus:ring-0"
+          />
+          <Button type="submit" size="icon" disabled={busy || !text.trim()} aria-label="发送">
+            <ArrowUp className="size-4" />
+          </Button>
+        </div>
+        <p className="pt-1 text-center text-[10px] tracking-[0.18em] text-faint">玄学预测，仅供娱乐</p>
       </form>
       {error ? <p className="mt-2 text-xs text-cinnabar">{error}</p> : null}
     </div>

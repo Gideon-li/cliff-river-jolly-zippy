@@ -12,7 +12,7 @@ export const Route = createRootRoute({
       { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" },
       { title: APP_NAME },
       { name: "theme-color", content: "#F4EFE6" },
-      { name: "description", content: "以时起盘，智断联想。奇门遁甲咨询。" },
+      { name: "description", content: "以时起盘，智断联想。奇门遁甲咨询。玄学预测，仅供娱乐。" },
     ],
     links: [
       { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },

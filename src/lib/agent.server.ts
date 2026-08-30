@@ -4,7 +4,7 @@ import { llmChat } from "./qimen.server";
 import { sameShichen } from "./shichen";
 
 export const GREETING =
-  "你好呀，我是问象。想聊一聊，或找我看盘，都可以直接说。看盘有四种测法：按此刻、指定一个时间、看年运月运日运，或摇个三位数求签。你想用哪一种，跟我说一声就好。";
+  "你好呀，我是问象。想聊一聊，或找我看盘，都可以直接说。看盘有四种测法：按此刻、指定一个时间、看年运月运日运，或摇个三位数求签。你想用哪一种，跟我说一声就好。盘面只作参考，玄学预测，仅供娱乐。";
 
 const EVENT_HINT = EVENT_CATALOG.map((e) => `${e.id}=${e.name}`).join("，");
 

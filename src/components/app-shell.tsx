@@ -8,6 +8,19 @@ const TABS = [
   { to: "/me", label: "我的", icon: UserRound },
 ] as const;
 
+export function EntertainmentNotice({ className }: { className?: string }) {
+  return (
+    <p
+      className={cn(
+        "inline-flex items-center rounded-full border border-cinnabar/35 bg-cinnabar/8 px-2.5 py-0.5 text-[11px] font-medium tracking-[0.22em] text-cinnabar",
+        className,
+      )}
+    >
+      玄学预测，仅供娱乐
+    </p>
+  );
+}
+
 export function AppShell({
   title,
   children,
@@ -23,6 +36,7 @@ export function AppShell({
       <header className="sticky top-0 z-20 border-b border-line bg-paper/92 px-5 pt-3 pb-3 backdrop-blur">
         <p className="text-[10px] tracking-[0.42em] text-faint">问象 · 奇门智断</p>
         <h1 className="mt-1 font-display text-xl text-ink">{title ?? "问象"}</h1>
+        <EntertainmentNotice className="mt-2" />
       </header>
       <main className={cn("flex-1 px-5 py-4", hideTabs ? "pb-8" : "pb-28")}>{children}</main>
       {hideTabs ? null : (
