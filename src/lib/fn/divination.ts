@@ -8,19 +8,27 @@ import {
   type CivilTime,
   type EventId,
   type GeoLocation,
+  type Portrait,
   type SessionMode,
 } from "@/lib/app-types";
 import {
   GREETING,
-  chitchatFallback,
   cluesFromScan,
+  companionSay,
   extractTurn,
   inferMode,
   isPreciseLocation,
   missingProfilePrompt,
+  modeChoicePrompt,
+  needFortunePrompt,
+  needLotsPrompt,
+  needTimePrompt,
+  readPortrait,
+  refreshPortrait,
   shouldOpenNewLotsChart,
   shouldOpenNewTimeChart,
   sisterSay,
+  type CastMode,
   type ExtractedTurn,
 } from "@/lib/agent.server";
 import { resolveLocation } from "@/lib/location.server";
@@ -96,10 +104,11 @@ type ProfileLite = {
   city: string | null;
   district: string | null;
   disabled: boolean;
+  portrait: Portrait;
 };
 
 type PendingBody = {
-  kind?: "need_profile" | "new_chart";
+  kind?: "need_profile" | "new_chart" | "need_mode" | "need_lots" | "need_time" | "need_span";
   declined?: boolean;
   askedProfile?: boolean;
   mode?: SessionMode;
@@ -131,23 +140,32 @@ function civilOf(scan: JsonValue): CivilTime {
 
 async function loadProfile(userId: string): Promise<ProfileLite> {
   const sql = await getSql();
-  const rows = await sql<ProfileLite>`
-    select nickname, gender, birth_year, province, city, district, disabled
+  const rows = await sql<ProfileLite & { portrait_json?: string }>`
+    select nickname, gender, birth_year, province, city, district, disabled, portrait_json
     from profiles where user_id = ${userId} limit 1
   `;
   if (rows[0]?.disabled) throw new Error("账号已被停用");
   const users = await sql<{ name: string }>`select name from "user" where id = ${userId} limit 1`;
-  return (
-    rows[0] ?? {
-      nickname: users[0]?.name ?? "问事人",
-      gender: null,
-      birth_year: null,
-      province: null,
-      city: null,
-      district: null,
-      disabled: false,
-    }
-  );
+  const row = rows[0];
+  return {
+    nickname: row?.nickname || users[0]?.name || "问事人",
+    gender: row?.gender ?? null,
+    birth_year: row?.birth_year ?? null,
+    province: row?.province ?? null,
+    city: row?.city ?? null,
+    district: row?.district ?? null,
+    disabled: Boolean(row?.disabled),
+    portrait: readPortrait(row?.portrait_json),
+  };
+}
+
+async function savePortrait(userId: string, portrait: Portrait) {
+  const sql = await getSql();
+  await sql`
+    insert into profiles (user_id, nickname, portrait_json)
+    values (${userId}, ${""}, ${JSON.stringify(portrait)})
+    on conflict (user_id) do update set portrait_json = ${JSON.stringify(portrait)}, updated_at = now()
+  `;
 }
 
 function bodyFrom(opts: {
@@ -315,7 +333,8 @@ async function fillChart(opts: {
   const now = new Date();
   let lots = null as { ju: number; steps: string[]; code: string } | null;
   if (opts.mode === "lots") {
-    const code = opts.lotsCode ?? "168";
+    const code = opts.lotsCode ?? "";
+    if (!/^\d{3}$/.test(code)) throw new Error("摇卦需要一个三位数");
     lots = (await runLots(code)) as { ju: number; steps: string[]; code: string };
   }
   const body = bodyFrom({
@@ -362,6 +381,7 @@ async function fillChart(opts: {
     eventName: EVENT_NAME[opts.eventId],
     allowPlace,
     place: allowPlace ? `${opts.loc.city}` : undefined,
+    portrait: opts.profile.portrait,
   });
   await insertMessage(opts.sessionId, opts.userId, "assistant", text, "compose");
   return loadPacked(opts.sessionId, opts.userId);
@@ -433,6 +453,165 @@ async function openCastSession(userId: string, data: {
     fortuneSpan: data.fortuneSpan,
     question,
   });
+}
+
+function asCastMode(m?: SessionMode | string | null): CastMode | null {
+  return m === "now" || m === "timed" || m === "fortune" || m === "lots" ? m : null;
+}
+
+function isYes(text: string, kind: ExtractedTurn["kind"]) {
+  if (kind === "confirm_yes") return true;
+  return /^(是的?|好的?呀?呢?吧?|要的?|开吧?|重新起?盘?|可以|行|嗯+|好)\s*[。.!！]*$/.test(text.trim());
+}
+
+function isNo(text: string, kind: ExtractedTurn["kind"]) {
+  if (kind === "confirm_no") return true;
+  return /^(不|先不|不用|取消|不要|算了)(了|吧|啦)?\s*[。.!！]*$/.test(text.trim());
+}
+
+function acceptsGuess(text: string) {
+  return /随便|你看着来|都可以|按你说/.test(text);
+}
+
+function wantsReading(extracted: ExtractedTurn): boolean {
+  if (extracted.kind === "chitchat" && !extracted.hasQuestion) return false;
+  if ((extracted.kind === "provide_profile" || extracted.kind === "decline_profile") && !extracted.hasQuestion) {
+    return false;
+  }
+  if (extracted.kind === "confirm_no") return false;
+  return (
+    extracted.hasQuestion ||
+    extracted.kind === "ask_question" ||
+    extracted.kind === "fortune" ||
+    extracted.kind === "new_lots" ||
+    extracted.kind === "new_time" ||
+    extracted.kind === "new_event" ||
+    extracted.kind === "pick_mode" ||
+    Boolean(extracted.lotsCode) ||
+    Boolean(extracted.civil) ||
+    Boolean(extracted.fortuneSpan) ||
+    Boolean(extracted.modeGuess && extracted.modeExplicit)
+  );
+}
+
+function resolvePickedMode(
+  extracted: ExtractedTurn,
+  pending: PendingBody | null,
+  yes: boolean,
+  text: string,
+): CastMode | null {
+  if (extracted.lotsCode) return "lots";
+  if (extracted.fortuneSpan || extracted.kind === "fortune") return "fortune";
+  if (extracted.civil && extracted.modeGuess !== "now") return "timed";
+  if (extracted.modeExplicit && extracted.modeGuess) return extracted.modeGuess;
+  if (extracted.kind === "pick_mode" && extracted.modeGuess) return extracted.modeGuess;
+  if (yes || acceptsGuess(text)) return asCastMode(pending?.mode);
+  if (pending?.kind === "need_profile") return asCastMode(pending.mode);
+  return null;
+}
+
+async function loadHistory(sessionId: string, userId: string) {
+  const sql = await getSql();
+  const historyRows = await sql<MsgRow>`
+    select role, content from messages
+    where session_id = ${sessionId} and user_id = ${userId} and role in ('user','assistant')
+    order by id desc limit 10
+  `;
+  return historyRows.reverse().map((m) => ({
+    role: m.role as "user" | "assistant",
+    content: m.content,
+  }));
+}
+
+async function replyText(
+  sessionId: string,
+  userId: string,
+  text: string,
+  kind = "chat",
+  extra?: { type?: "reply" | "confirm"; eventId?: EventId },
+) {
+  await insertMessage(sessionId, userId, "assistant", text, kind);
+  return {
+    type: extra?.type ?? ("reply" as const),
+    session: await loadPacked(sessionId, userId),
+    eventId: extra?.eventId,
+  };
+}
+
+async function proceedCast(opts: {
+  userId: string;
+  session: SessionRow;
+  profile: ProfileLite;
+  loc: GeoLocation;
+  mode: CastMode;
+  eventId: EventId;
+  civil?: CivilTime;
+  lotsCode?: string | null;
+  fortuneSpan?: "day" | "month" | "year" | null;
+  question: string;
+  declined: boolean;
+  openNew: boolean;
+}) {
+  const pendingBase: PendingBody = {
+    mode: opts.mode,
+    eventId: opts.eventId,
+    civil: opts.civil,
+    question: opts.question,
+    lotsCode: opts.lotsCode ?? undefined,
+    fortuneSpan: opts.fortuneSpan ?? undefined,
+    declined: opts.declined,
+  };
+  if (opts.mode === "lots" && !/^\d{3}$/.test(opts.lotsCode ?? "")) {
+    await writePending(opts.session.id, opts.userId, { ...pendingBase, kind: "need_lots" });
+    return replyText(opts.session.id, opts.userId, needLotsPrompt(), "system");
+  }
+  if (opts.mode === "timed" && !opts.civil?.year) {
+    await writePending(opts.session.id, opts.userId, { ...pendingBase, kind: "need_time" });
+    return replyText(opts.session.id, opts.userId, needTimePrompt(), "system");
+  }
+  if (opts.mode === "fortune" && !opts.fortuneSpan) {
+    await writePending(opts.session.id, opts.userId, { ...pendingBase, kind: "need_span" });
+    return replyText(opts.session.id, opts.userId, needFortunePrompt(), "system");
+  }
+  const gaps = gapsOf(opts.profile, opts.loc);
+  if (hasGaps(gaps) && !opts.declined) {
+    await writePending(opts.session.id, opts.userId, {
+      ...pendingBase,
+      kind: "need_profile",
+      askedProfile: true,
+    });
+    return replyText(
+      opts.session.id,
+      opts.userId,
+      missingProfilePrompt({ ...gaps, question: opts.question }),
+      "system",
+    );
+  }
+  if (opts.openNew) {
+    const opened = await openCastSession(opts.userId, {
+      mode: opts.mode,
+      eventId: opts.eventId,
+      question: opts.question,
+      civil: opts.civil,
+      lotsCode: opts.lotsCode ?? undefined,
+      fortuneSpan: opts.fortuneSpan ?? undefined,
+      location: opts.loc,
+    });
+    return { type: "new_session" as const, session: opened };
+  }
+  const packed = await fillChart({
+    userId: opts.userId,
+    sessionId: opts.session.id,
+    mode: opts.mode,
+    eventId: opts.eventId,
+    loc: opts.loc,
+    profile: opts.profile,
+    civil: opts.civil,
+    lotsCode: opts.lotsCode,
+    fortuneSpan: opts.fortuneSpan,
+    question: opts.question,
+  });
+  return { type: "reply" as const, session: packed };
 }
 
 export const ensureThread = createServerFn({ method: "POST" })
@@ -520,7 +699,7 @@ export const sendConsult = createServerFn({ method: "POST" })
   .validator(
     z.object({
       sessionId: z.string().min(1),
-      text: z.string().trim().min(1).max(400),
+      text: z.string().trim().min(1).max(800),
     }),
   )
   .handler(async ({ context, data }) => {
@@ -542,165 +721,239 @@ export const sendConsult = createServerFn({ method: "POST" })
     await insertMessage(session.id, context.userId, "user", data.text, "user");
 
     const pending = session.pending_json ? (JSON.parse(session.pending_json) as PendingBody) : null;
-    const extracted = await extractTurn({
-      text: data.text,
-      mode: session.mode as SessionMode,
-      eventId: (session.event_id as EventId | null) ?? null,
-      chartCivil: chartCivil.year ? chartCivil : null,
-      hasPending: Boolean(pending && pending.kind === "new_chart"),
-      awaitingProfile: Boolean(pending && pending.kind === "need_profile"),
-    });
+    const history = await loadHistory(session.id, context.userId);
+    const [extracted, nextPortrait] = await Promise.all([
+      extractTurn({
+        text: data.text,
+        mode: session.mode as SessionMode,
+        eventId: (session.event_id as EventId | null) ?? null,
+        chartCivil: chartCivil.year ? chartCivil : null,
+        hasPending: Boolean(pending && pending.kind === "new_chart"),
+        awaitingProfile: Boolean(pending && pending.kind === "need_profile"),
+        awaitingMode: Boolean(pending && pending.kind === "need_mode"),
+        awaitingKind: pending?.kind,
+      }),
+      refreshPortrait({
+        current: profile.portrait,
+        nickname: profile.nickname,
+        text: data.text,
+        recent: history,
+      }).catch(() => profile.portrait),
+    ]);
 
     profile = await applyProfilePatch(context.userId, extracted);
+    await savePortrait(context.userId, nextPortrait);
+    profile = { ...profile, portrait: nextPortrait };
     loc = locFromProfile(profile, loc);
 
-    const yes =
-      extracted.kind === "confirm_yes" || /^(是|好|要|开|重新|可以|行|嗯)/.test(data.text.trim());
-    const no = extracted.kind === "confirm_no" || /^(不|先不|不用|取消)/.test(data.text.trim());
+    const yes = isYes(data.text, extracted.kind);
+    const no = isNo(data.text, extracted.kind);
+    const hasChart = Boolean(session.ju_label);
+    const nextEvent = (extracted.eventId ?? pending?.eventId ?? (session.event_id as EventId) ?? "wealth") as EventId;
+    let fortuneSpan = extracted.fortuneSpan ?? pending?.fortuneSpan ?? null;
+    if (pending?.kind === "need_span" && yes && !fortuneSpan) fortuneSpan = "day";
+    const lotsCode = extracted.lotsCode ?? pending?.lotsCode ?? null;
+    const civil = extracted.civil ?? pending?.civil ?? undefined;
+    const question = extracted.question || pending?.question || data.text;
+    const declined =
+      extracted.declinedProfile || extracted.kind === "decline_profile" || Boolean(pending?.declined);
+    const picked = resolvePickedMode(extracted, pending, yes, data.text);
+
+    const comfort = async () => {
+      const text = await companionSay({
+        text: data.text,
+        nickname: profile.nickname,
+        portrait: profile.portrait,
+        history,
+      });
+      return replyText(session.id, context.userId, text, "chat");
+    };
+
+    const cast = (mode: CastMode, openNew = hasChart) =>
+      proceedCast({
+        userId: context.userId,
+        session,
+        profile,
+        loc,
+        mode,
+        eventId: nextEvent,
+        civil,
+        lotsCode,
+        fortuneSpan,
+        question,
+        declined,
+        openNew,
+      });
 
     if (pending?.kind === "new_chart" && yes) {
       await writePending(session.id, context.userId, null);
-      const opened = await openCastSession(context.userId, {
-        mode: (pending.mode as SessionMode) || inferMode(extracted, session.mode as SessionMode),
-        eventId: pending.eventId || (session.event_id as EventId) || "wealth",
-        question: String(pending.question ?? extracted.question ?? data.text),
-        civil: pending.civil,
-        lotsCode: pending.lotsCode ?? session.lots_code ?? undefined,
-        fortuneSpan: pending.fortuneSpan,
-        location: loc,
+      const mode =
+        picked ||
+        asCastMode(pending.mode) ||
+        asCastMode(inferMode(extracted, session.mode as SessionMode)) ||
+        "now";
+      return proceedCast({
+        userId: context.userId,
+        session,
+        profile,
+        loc,
+        mode,
+        eventId: pending.eventId || nextEvent,
+        civil: pending.civil ?? civil,
+        lotsCode: pending.lotsCode ?? lotsCode,
+        fortuneSpan: pending.fortuneSpan ?? fortuneSpan,
+        question: pending.question || question,
+        declined,
+        openNew: true,
       });
-      return { type: "new_session" as const, session: opened };
     }
     if (pending?.kind === "new_chart" && no) {
       await writePending(session.id, context.userId, null);
-      const text = "好，咱们继续看这一盘。你把想问的细节再说说就行。";
-      await insertMessage(session.id, context.userId, "assistant", text, "system");
-      return { type: "reply" as const, session: await loadPacked(session.id, context.userId) };
+      return replyText(
+        session.id,
+        context.userId,
+        "好，咱们继续看这一盘。你把想问的细节再说说就行。",
+        "system",
+      );
     }
-
-    const nextEvent = (extracted.eventId ?? (session.event_id as EventId) ?? "wealth") as EventId;
-    const nextMode = inferMode(extracted, session.mode as SessionMode);
-    const question = extracted.question || pending?.question || data.text;
-    const hasChart = Boolean(session.ju_label);
-    const gaps = gapsOf(profile, loc);
-    const declined = extracted.declinedProfile || extracted.kind === "decline_profile" || Boolean(pending?.declined);
 
     if (pending?.kind === "need_profile") {
-      const stillMissing = hasGaps(gaps) && !declined;
-      if (stillMissing && !extracted.declinedProfile && extracted.kind === "provide_profile") {
-        const text = missingProfilePrompt({ ...gaps, question: pending.question });
-        await writePending(session.id, context.userId, { ...pending, askedProfile: true });
-        await insertMessage(session.id, context.userId, "assistant", text, "system");
-        return { type: "reply" as const, session: await loadPacked(session.id, context.userId) };
+      if (declined || !hasGaps(gapsOf(profile, loc))) {
+        const mode = picked || asCastMode(pending.mode) || "now";
+        return cast(mode, hasChart);
       }
-      const packed = await fillChart({
-        userId: context.userId,
-        sessionId: session.id,
-        mode: (pending.mode as SessionMode) || nextMode,
-        eventId: (pending.eventId as EventId) || nextEvent,
-        loc,
-        profile,
-        civil: pending.civil ?? extracted.civil ?? undefined,
-        lotsCode: pending.lotsCode ?? extracted.lotsCode,
-        fortuneSpan: pending.fortuneSpan ?? extracted.fortuneSpan,
-        question: pending.question || question,
-      });
-      return { type: "reply" as const, session: packed };
+      if (extracted.gender || extracted.birthYear || extracted.location || extracted.kind === "provide_profile") {
+        await writePending(session.id, context.userId, { ...pending, askedProfile: true });
+        return replyText(
+          session.id,
+          context.userId,
+          missingProfilePrompt({ ...gapsOf(profile, loc), question: pending.question }),
+          "system",
+        );
+      }
+      return comfort();
     }
 
-    const readyQuestion =
-      extracted.hasQuestion ||
-      extracted.kind === "ask_question" ||
-      extracted.kind === "fortune" ||
-      extracted.kind === "new_lots" ||
-      Boolean(extracted.lotsCode);
+    if (
+      pending?.kind === "need_lots" ||
+      pending?.kind === "need_time" ||
+      pending?.kind === "need_span" ||
+      pending?.kind === "need_mode"
+    ) {
+      if (picked) return cast(picked, hasChart);
+      const confirmed = asCastMode(pending.mode);
+      if (yes && confirmed) return cast(confirmed, hasChart);
+      if (wantsReading(extracted) && !picked) {
+        await writePending(session.id, context.userId, {
+          kind: "need_mode",
+          mode: extracted.modeGuess ?? pending.mode,
+          eventId: nextEvent,
+          civil,
+          question,
+          lotsCode: lotsCode ?? undefined,
+          fortuneSpan: fortuneSpan ?? undefined,
+          declined,
+        });
+        return replyText(
+          session.id,
+          context.userId,
+          modeChoicePrompt(extracted.modeGuess ?? asCastMode(pending.mode), question),
+          "system",
+        );
+      }
+      return comfort();
+    }
 
     if (!hasChart) {
-      if (extracted.kind === "chitchat" && !readyQuestion && !extracted.gender && !extracted.birthYear && !extracted.location) {
-        await insertMessage(session.id, context.userId, "assistant", chitchatFallback(), "chat");
-        return { type: "reply" as const, session: await loadPacked(session.id, context.userId) };
-      }
-      if (readyQuestion && hasGaps(gaps) && !declined && !pending?.askedProfile) {
-        await writePending(session.id, context.userId, {
-          kind: "need_profile",
-          askedProfile: true,
-          mode: nextMode,
-          eventId: nextEvent,
-          civil: extracted.civil ?? undefined,
-          question,
-          lotsCode: extracted.lotsCode ?? undefined,
-          fortuneSpan: extracted.fortuneSpan ?? undefined,
-        });
-        const text = missingProfilePrompt({ ...gaps, question });
-        await insertMessage(session.id, context.userId, "assistant", text, "system");
-        return { type: "reply" as const, session: await loadPacked(session.id, context.userId) };
-      }
-      if (!readyQuestion && (extracted.gender || extracted.birthYear || extracted.location || extracted.kind === "provide_profile")) {
+      if (
+        !wantsReading(extracted) &&
+        (extracted.kind === "provide_profile" || extracted.gender || extracted.birthYear || extracted.location)
+      ) {
         const left = gapsOf(profile, loc);
         const text = hasGaps(left)
           ? missingProfilePrompt(left)
-          : "资料我记下了。想问哪件事，直接说就好。";
-        await insertMessage(session.id, context.userId, "assistant", text, "system");
-        return { type: "reply" as const, session: await loadPacked(session.id, context.userId) };
+          : "资料我记下了。想问哪件事，直接说就好。看盘的话先选一种测法：此刻、指定时间、年月日运，或摇个三位数。";
+        return replyText(session.id, context.userId, text, "system");
       }
-      if (!readyQuestion) {
-        await insertMessage(session.id, context.userId, "assistant", chitchatFallback(), "chat");
-        return { type: "reply" as const, session: await loadPacked(session.id, context.userId) };
+      if (!wantsReading(extracted)) return comfort();
+      if (!picked) {
+        await writePending(session.id, context.userId, {
+          kind: "need_mode",
+          mode: extracted.modeGuess ?? undefined,
+          eventId: nextEvent,
+          civil,
+          question,
+          lotsCode: lotsCode ?? undefined,
+          fortuneSpan: fortuneSpan ?? undefined,
+          declined,
+        });
+        return replyText(session.id, context.userId, modeChoicePrompt(extracted.modeGuess, question), "system");
       }
-      const packed = await fillChart({
-        userId: context.userId,
-        sessionId: session.id,
-        mode: nextMode,
-        eventId: nextEvent,
-        loc,
-        profile,
-        civil: extracted.civil ?? undefined,
-        lotsCode: extracted.lotsCode,
-        fortuneSpan: extracted.fortuneSpan,
-        question,
-      });
-      return { type: "reply" as const, session: packed };
+      return cast(picked, false);
+    }
+
+    if (!wantsReading(extracted) && extracted.kind !== "followup" && extracted.kind !== "ask_question") {
+      return comfort();
     }
 
     const timeShift = shouldOpenNewTimeChart(session.mode as SessionMode, chartCivil, extracted.civil);
     const lotsShift = shouldOpenNewLotsChart(session.mode as SessionMode, session.event_id as EventId, nextEvent);
+    const modeShift = Boolean(picked && picked !== session.mode);
+    const eventShift = extracted.kind === "new_event" && nextEvent !== session.event_id;
 
     if (timeShift && extracted.civil) {
       await writePending(session.id, context.userId, {
         kind: "new_chart",
-        mode: session.mode as SessionMode,
+        mode: picked || (session.mode as SessionMode),
         eventId: nextEvent,
         civil: extracted.civil,
         question,
       });
-      const text = `你提到的时间已经过了这一盘的时辰（${shichenRangeLabel(chartCivil.hour)}）。要不要按新时间再起一盘？说「好」就行，不想换就继续问这一盘。`;
-      await insertMessage(session.id, context.userId, "assistant", text, "confirm");
-      return { type: "confirm" as const, session: await loadPacked(session.id, context.userId) };
+      return replyText(
+        session.id,
+        context.userId,
+        `你提到的时间已经过了这一盘的时辰（${shichenRangeLabel(chartCivil.hour)}）。要不要按新时间再起一盘？说「好」就行，不想换就继续问这一盘。`,
+        "confirm",
+        { type: "confirm" },
+      );
     }
 
-    if (lotsShift) {
+    if (lotsShift || modeShift || eventShift) {
+      if (!picked) {
+        await writePending(session.id, context.userId, {
+          kind: "need_mode",
+          mode: extracted.modeGuess ?? undefined,
+          eventId: nextEvent,
+          civil,
+          question,
+          lotsCode: lotsCode ?? undefined,
+          fortuneSpan: fortuneSpan ?? undefined,
+          declined,
+        });
+        return replyText(session.id, context.userId, modeChoicePrompt(extracted.modeGuess, question), "system");
+      }
       await writePending(session.id, context.userId, {
         kind: "new_chart",
-        mode: "lots",
+        mode: picked,
         eventId: nextEvent,
-        lotsCode: session.lots_code ?? undefined,
+        civil,
+        lotsCode: lotsCode ?? undefined,
+        fortuneSpan: fortuneSpan ?? undefined,
         question,
       });
-      const text = `这一盘本来在看「${EVENT_NAME[(session.event_id as EventId) || "wealth"]}」，你这次问的是「${EVENT_NAME[nextEvent]}」。要不要另开一局？说「好」我就重起。`;
-      await insertMessage(session.id, context.userId, "assistant", text, "confirm");
-      return { type: "confirm" as const, session: await loadPacked(session.id, context.userId) };
+      return replyText(
+        session.id,
+        context.userId,
+        `这一盘是「${EVENT_NAME[(session.event_id as EventId) || "wealth"]}」。你这次想另起一盘的话，说「好」我就按新的测法来；想继续问这一盘，说一声就行。`,
+        "confirm",
+        { type: "confirm" },
+      );
     }
 
-    const historyRows = await sql<MsgRow>`
-      select role, content from messages
-      where session_id = ${session.id} and user_id = ${context.userId} and role in ('user','assistant')
-      order by id desc limit 8
-    `;
-    const history = historyRows
-      .reverse()
-      .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
-    const scan = JSON.parse(session.scan_json || "{}") as Record<string, unknown>;
+    if (extracted.kind === "chitchat" && !extracted.hasQuestion) return comfort();
+
     try {
+      const scan = JSON.parse(session.scan_json || "{}") as Record<string, unknown>;
       const text = await sisterSay({
         question,
         clues: cluesFromScan(scan),
@@ -711,6 +964,7 @@ export const sendConsult = createServerFn({ method: "POST" })
         place: isPreciseLocation(loc) ? loc.city : undefined,
         followup: true,
         history,
+        portrait: profile.portrait,
       });
       await insertMessage(session.id, context.userId, "assistant", text, "ask");
       if (nextEvent && nextEvent !== session.event_id) {
@@ -719,7 +973,6 @@ export const sendConsult = createServerFn({ method: "POST" })
       return { type: "reply" as const, session: await loadPacked(session.id, context.userId), eventId: nextEvent };
     } catch (err) {
       const text = err instanceof Error ? err.message : "这一问问得有点含糊，你换个说法再试试。";
-      await insertMessage(session.id, context.userId, "assistant", text, "error");
-      return { type: "reply" as const, session: await loadPacked(session.id, context.userId) };
+      return replyText(session.id, context.userId, text, "error");
     }
   });

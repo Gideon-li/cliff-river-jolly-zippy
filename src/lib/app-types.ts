@@ -33,6 +33,26 @@ export type GeoLocation = {
   source: "gps" | "ip" | "fallback" | "profile";
 };
 
+export type Portrait = {
+  summary: string;
+  mood: string;
+  tone: string;
+  situation: string;
+  concerns: string[];
+  traits: string[];
+  care: string;
+};
+
+export const EMPTY_PORTRAIT: Portrait = {
+  summary: "",
+  mood: "",
+  tone: "",
+  situation: "",
+  concerns: [],
+  traits: [],
+  care: "",
+};
+
 export type Profile = {
   userId: string;
   nickname: string;
@@ -64,6 +84,13 @@ export const EVENT_CATALOG: { id: EventId; name: string; hint: string }[] = [
 export const EVENT_NAME: Record<EventId, string> = Object.fromEntries(
   EVENT_CATALOG.map((e) => [e.id, e.name]),
 ) as Record<EventId, string>;
+
+export const MODE_LABEL: Record<Exclude<SessionMode, "inbox">, string> = {
+  now: "按此刻时辰看",
+  timed: "指定一个时间看",
+  fortune: "看年运、月运或日运",
+  lots: "摇卦求签（报一个三位数）",
+};
 
 export const BEIJING_LOCATION: GeoLocation = {
   province: "北京市",

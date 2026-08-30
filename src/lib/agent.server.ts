@@ -1,10 +1,10 @@
-import type { CivilTime, EventId, GeoLocation, SessionMode } from "./app-types";
-import { EVENT_CATALOG } from "./app-types";
+import type { CivilTime, EventId, GeoLocation, Portrait, SessionMode } from "./app-types";
+import { EMPTY_PORTRAIT, EVENT_CATALOG, MODE_LABEL } from "./app-types";
 import { llmChat } from "./qimen.server";
 import { sameShichen } from "./shichen";
 
 export const GREETING =
-  "你好呀，我是问象。想问什么，直接跟我说就好。方便的话，也可以告诉我你的性别、出生年和现在所在的城市，我会把盘看得更贴你一些；不愿意说也完全没关系。";
+  "你好呀，我是问象。想聊一聊，或找我看盘，都可以直接说。看盘有四种测法：按此刻、指定一个时间、看年运月运日运，或摇个三位数求签。你想用哪一种，跟我说一声就好。";
 
 const EVENT_HINT = EVENT_CATALOG.map((e) => `${e.id}=${e.name}`).join("，");
 
@@ -20,6 +20,8 @@ const BAGUA_BUILDING: Record<string, string> = {
   中: "室内、中庭、枢纽",
 };
 
+export type CastMode = Exclude<SessionMode, "inbox">;
+
 export type ExtractedTurn = {
   kind:
     | "followup"
@@ -32,7 +34,8 @@ export type ExtractedTurn = {
     | "chitchat"
     | "provide_profile"
     | "decline_profile"
-    | "ask_question";
+    | "ask_question"
+    | "pick_mode";
   eventId: EventId | null;
   civil: CivilTime | null;
   lotsCode: string | null;
@@ -43,6 +46,8 @@ export type ExtractedTurn = {
   location: { province: string; city: string; district: string } | null;
   declinedProfile: boolean;
   hasQuestion: boolean;
+  modeGuess: CastMode | null;
+  modeExplicit: boolean;
   reason: string;
 };
 
@@ -51,7 +56,7 @@ export function isPreciseLocation(loc: GeoLocation | null | undefined): boolean 
   return loc.source === "gps" || loc.source === "profile";
 }
 
-export function clipHan(text: string, max = 200): string {
+export function clipHan(text: string, max = 500): string {
   const t = text.replace(/\s+/g, " ").replace(/[#*`]/g, "").trim();
   const chars = [...t];
   if (chars.length <= max) return t;
@@ -111,7 +116,7 @@ function parsePlace(text: string): ExtractedTurn["location"] {
     text.match(/在([\u4e00-\u9fa5]{2,8})(?:市|县|区|省)?/) ??
     text.match(/([\u4e00-\u9fa5]{2,8})(?:市|县)/);
   if (!cityHit) return null;
-  let name = cityHit[1]!.replace(/(省|市|县|区)$/g, "");
+  const name = cityHit[1]!.replace(/(省|市|县|区)$/g, "");
   if (["家", "这", "那", "外面", "公司", "路上", "这边", "那里", "学校", "医院"].includes(name)) return null;
   if (name === "北京") return { province: "北京市", city: "北京市", district: "东城区" };
   if (name === "上海") return { province: "上海市", city: "上海市", district: "黄浦区" };
@@ -119,6 +124,35 @@ function parsePlace(text: string): ExtractedTurn["location"] {
   if (name === "重庆") return { province: "重庆市", city: "重庆市", district: "渝中区" };
   const city = name.endsWith("市") ? name : `${name}市`;
   return { province: city, city, district: city };
+}
+
+function guessMode(text: string): { mode: CastMode | null; explicit: boolean } {
+  const t = text.trim();
+  if (/(?:摇卦|摇个|求签|摇签|三位数)/.test(t) || /(?:摇卦|摇个|号码|数字)[^\d]{0,4}\d{3}/.test(t) || /^\d{3}$/.test(t)) {
+    return { mode: "lots", explicit: true };
+  }
+  if (/第四|选四|测法四|第四种/.test(t)) return { mode: "lots", explicit: true };
+  if (/年运|今年运|这一年|月运|这个月运|本月运|日运|今天运|今日运|看运势|年运月运/.test(t)) {
+    return { mode: "fortune", explicit: true };
+  }
+  if (/第三|选三|测法三|第三种/.test(t)) return { mode: "fortune", explicit: true };
+  if (
+    /指定时间|选个时间|选定时间|约在|改到/.test(t) ||
+    /明天|后天|大后天|下周|上周/.test(t) ||
+    /\d{1,2}\s*月\s*\d{1,2}/.test(t) ||
+    /\d{1,2}\s*点/.test(t)
+  ) {
+    return { mode: "timed", explicit: /明天|后天|点|月|指定|选定/.test(t) };
+  }
+  if (/第二|选二|测法二|第二种/.test(t)) return { mode: "timed", explicit: true };
+  if (
+    /此刻|现在看|当前时辰|当前时间|按现在|按此刻|按当前|这一时辰/.test(t) ||
+    /第一|选一|测法一|第一种/.test(t)
+  ) {
+    return { mode: "now", explicit: true };
+  }
+  if (/帮我看|起盘|测一|算一|问问盘|看一下/.test(t)) return { mode: "now", explicit: false };
+  return { mode: null, explicit: false };
 }
 
 function heuristicExtract(text: string): Partial<ExtractedTurn> {
@@ -135,7 +169,7 @@ function heuristicExtract(text: string): Partial<ExtractedTurn> {
     else if (n >= 16 && n <= 90) birthYear = new Date().getFullYear() - n;
   }
 
-  const lots = t.match(/(?:摇卦|摇个|号码|数字)[^\d]{0,4}(\d{3})/) ?? (/^\d{3}$/.test(t) ? [t, t] : null);
+  const lots = t.match(/(?:摇卦|摇个|号码|数字|求签)[^\d]{0,4}(\d{3})/) ?? (/^\d{3}$/.test(t) ? [t, t] : null);
   const lotsCode = lots ? lots[1] : null;
 
   let fortuneSpan: "day" | "month" | "year" | null = null;
@@ -169,6 +203,12 @@ function heuristicExtract(text: string): Partial<ExtractedTurn> {
     }
   }
 
+  const mode = guessMode(t);
+  const chitchatOnly = /^(你好|在吗|嗯|好的|谢谢|早|晚安)$/.test(t);
+  const hasQuestion =
+    Boolean(eventId || lotsCode || fortuneSpan || mode.mode) ||
+    (t.length >= 4 && /看|问|测|算|盘|运|回款|面试/.test(t) && !chitchatOnly);
+
   return {
     gender,
     birthYear,
@@ -177,7 +217,9 @@ function heuristicExtract(text: string): Partial<ExtractedTurn> {
     declinedProfile: Boolean(declined),
     eventId,
     location: parsePlace(t),
-    hasQuestion: t.length >= 2 && !/^(你好|在吗|嗯|好的|谢谢)$/.test(t),
+    hasQuestion,
+    modeGuess: mode.mode,
+    modeExplicit: mode.explicit,
   };
 }
 
@@ -201,6 +243,10 @@ function parseCivil(raw: unknown): CivilTime | null {
   return null;
 }
 
+function asCastMode(v: unknown): CastMode | null {
+  return v === "now" || v === "timed" || v === "fortune" || v === "lots" ? v : null;
+}
+
 export async function extractTurn(input: {
   text: string;
   mode: SessionMode;
@@ -208,10 +254,16 @@ export async function extractTurn(input: {
   chartCivil: CivilTime | null;
   hasPending: boolean;
   awaitingProfile: boolean;
+  awaitingMode: boolean;
+  awaitingKind?: string;
 }): Promise<ExtractedTurn> {
   const heuristic = heuristicExtract(input.text);
   const fallback: ExtractedTurn = {
-    kind: heuristic.hasQuestion ? "ask_question" : "chitchat",
+    kind: input.awaitingMode
+      ? "pick_mode"
+      : heuristic.hasQuestion
+        ? "ask_question"
+        : "chitchat",
     eventId: heuristic.eventId ?? input.eventId,
     civil: null,
     lotsCode: heuristic.lotsCode ?? null,
@@ -222,13 +274,16 @@ export async function extractTurn(input: {
     location: heuristic.location ?? null,
     declinedProfile: Boolean(heuristic.declinedProfile),
     hasQuestion: Boolean(heuristic.hasQuestion),
+    modeGuess: heuristic.modeGuess ?? null,
+    modeExplicit: Boolean(heuristic.modeExplicit),
     reason: "",
   };
   const now = new Date();
   const sys = `你是问象的对话理解器。只输出 JSON。
-字段：kind, eventId, civil, lotsCode, fortuneSpan, question, gender, birthYear, location, declinedProfile, hasQuestion, reason。
+字段：kind, eventId, civil, lotsCode, fortuneSpan, question, gender, birthYear, location, declinedProfile, hasQuestion, modeGuess, modeExplicit, reason。
 kind：
 - ask_question：用户提出了要预测的事情
+- pick_mode：用户在选择或确认测法
 - followup：已有盘面，继续追问同一件事
 - new_time：提到另一个具体时间，可能要重起盘
 - new_event：换成另一类事项
@@ -237,21 +292,25 @@ kind：
 - provide_profile：主要在补性别、出生年或城市
 - decline_profile：不愿提供资料，可用默认
 - confirm_yes / confirm_no：同意或拒绝新开盘
-- chitchat：寒暄
+- chitchat：寒暄、情绪倾诉、和生活有关但不是起盘
+测法 modeGuess 只能是 now|timed|fortune|lots|null：
+- now：按当前时辰
+- timed：用户指定某个时间
+- fortune：年运、月运或日运
+- lots：摇卦求签，要三位数
+modeExplicit 为 true 表示用户已经点明测法（说了此刻/指定时间/运势/摇卦或三位数），不必再问。
 eventId 只能是：${EVENT_HINT}。没有把握则 ${input.eventId ?? "null"}。
 civil 为北京时间 {year,month,day,hour,minute}，没提时间则为 null。今天大约 ${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}。
-location 形如 {province,city,district}，用户没提城市则为 null。杭州→浙江省/杭州市/杭州市。
+location 形如 {province,city,district}，用户没提城市则为 null。
 gender 为 male|female|null。birthYear 为四位数字或 null。
-declinedProfile 为 true/false。hasQuestion 为是否已有可预测的事。
-question 为整理后的中文问句。
-当前模式：${input.mode}；事项：${input.eventId ?? "无"}；等确认新盘：${input.hasPending ? "是" : "否"}；等补资料：${input.awaitingProfile ? "是" : "否"}。`;
+当前模式：${input.mode}；事项：${input.eventId ?? "无"}；等确认新盘：${input.hasPending ? "是" : "否"}；等补资料：${input.awaitingProfile ? "是" : "否"}；等选测法：${input.awaitingMode ? "是" : "否"}；等待补充：${input.awaitingKind ?? "无"}。`;
 
   const r = await llmChat(
     [
       { role: "system", content: sys },
-      { role: "user", content: input.text.slice(0, 400) },
+      { role: "user", content: input.text.slice(0, 500) },
     ],
-    { json: true, maxTokens: 360 },
+    { json: true, maxTokens: 420 },
   );
   if (!r.ok) return fallback;
   try {
@@ -285,6 +344,7 @@ question 为整理后的中文问句。
       "provide_profile",
       "decline_profile",
       "ask_question",
+      "pick_mode",
     ];
     const gender =
       obj.gender === "female" || obj.gender === "male" ? obj.gender : (heuristic.gender ?? null);
@@ -301,18 +361,25 @@ question 为整理后的中文问句。
         : (heuristic.fortuneSpan ?? null);
     const hasQuestion =
       obj.hasQuestion === true || obj.hasQuestion === false ? Boolean(obj.hasQuestion) : fallback.hasQuestion;
+    const modeGuess = asCastMode(obj.modeGuess) ?? heuristic.modeGuess ?? null;
+    const modeExplicit =
+      obj.modeExplicit === true || obj.modeExplicit === false
+        ? Boolean(obj.modeExplicit)
+        : Boolean(heuristic.modeExplicit);
     return {
       kind: kinds.includes(kind) ? kind : fallback.kind,
       eventId,
       civil: parseCivil(obj.civil),
       lotsCode: lots,
       fortuneSpan: span,
-      question: String(obj.question ?? input.text).slice(0, 400),
+      question: String(obj.question ?? input.text).slice(0, 500),
       gender,
       birthYear,
       location: location ?? heuristic.location ?? null,
       declinedProfile: Boolean(obj.declinedProfile) || Boolean(heuristic.declinedProfile),
       hasQuestion,
+      modeGuess,
+      modeExplicit: modeExplicit || Boolean(lots) || Boolean(span) || Boolean(parseCivil(obj.civil)),
       reason: String(obj.reason ?? "").slice(0, 200),
     };
   } catch {
@@ -321,9 +388,10 @@ question 为整理后的中文问句。
 }
 
 export function inferMode(extracted: ExtractedTurn, current: SessionMode): SessionMode {
-  if (extracted.lotsCode) return "lots";
-  if (extracted.fortuneSpan || extracted.kind === "fortune") return "fortune";
-  if (extracted.civil) return "timed";
+  if (extracted.lotsCode || extracted.modeGuess === "lots") return "lots";
+  if (extracted.fortuneSpan || extracted.kind === "fortune" || extracted.modeGuess === "fortune") return "fortune";
+  if (extracted.civil || extracted.modeGuess === "timed") return "timed";
+  if (extracted.modeGuess === "now") return "now";
   if (current === "inbox") return "now";
   return current;
 }
@@ -348,6 +416,107 @@ export function shouldOpenNewLotsChart(
   return currentEvent !== nextEvent;
 }
 
+export function modeChoicePrompt(guess: CastMode | null, question?: string): string {
+  const hint = guess
+    ? `你这次更像是想「${MODE_LABEL[guess]}」${question ? `，事关「${question.slice(0, 24)}」` : ""}。说「好」我就按这个来，也可以改口。`
+    : "你想用哪一种，直接说就好。";
+  return clipHan(
+    `要起盘的话，先选一种测法：按此刻时辰看、指定一个时间看、看年运月运或日运，或者摇个三位数求签。${hint}`,
+  );
+}
+
+export function needLotsPrompt(): string {
+  return "摇卦这一路要一个三位数，比如 168。你心里默一个，报给我就好。";
+}
+
+export function needTimePrompt(): string {
+  return "指定时间这一路，把你想看的日期和钟点告诉我就好，比如「明天下午三点」。";
+}
+
+export function needFortunePrompt(): string {
+  return "你想看年运、月运，还是今天的日运？说一声我就起。";
+}
+
+export function portraitLine(portrait?: Portrait | null): string {
+  if (!portrait?.summary) return "";
+  const bits = [
+    portrait.summary,
+    portrait.mood ? `近况心情：${portrait.mood}` : "",
+    portrait.concerns.length ? `牵挂：${portrait.concerns.slice(0, 4).join("、")}` : "",
+    portrait.care ? `安慰时注意：${portrait.care}` : "",
+  ].filter(Boolean);
+  return `问事人画像（供语气和针对性，不要当众宣读）：${bits.join("。")}`;
+}
+
+function parsePortrait(raw: unknown): Portrait {
+  if (!raw || typeof raw !== "object") return { ...EMPTY_PORTRAIT };
+  const o = raw as Record<string, unknown>;
+  const list = (v: unknown) =>
+    Array.isArray(v) ? v.map((x) => String(x).slice(0, 40)).filter(Boolean).slice(0, 6) : [];
+  return {
+    summary: String(o.summary ?? "").slice(0, 240),
+    mood: String(o.mood ?? "").slice(0, 80),
+    tone: String(o.tone ?? "").slice(0, 80),
+    situation: String(o.situation ?? "").slice(0, 160),
+    concerns: list(o.concerns),
+    traits: list(o.traits),
+    care: String(o.care ?? "").slice(0, 120),
+  };
+}
+
+export function readPortrait(json: string | null | undefined): Portrait {
+  if (!json) return { ...EMPTY_PORTRAIT };
+  try {
+    return parsePortrait(JSON.parse(json));
+  } catch {
+    return { ...EMPTY_PORTRAIT };
+  }
+}
+
+export async function refreshPortrait(input: {
+  current: Portrait;
+  nickname: string;
+  text: string;
+  recent: { role: string; content: string }[];
+}): Promise<Portrait> {
+  const sys = `你在为问象更新「人物肖像」。只输出 JSON。
+字段：summary, mood, tone, situation, concerns（数组）, traits（数组）, care。
+规则：
+- 只写有把握的推断，没把握就沿用旧值或留空，不要编造职业、家庭、疾病。
+- summary 两三句，写这个人眼下的处境和性情。
+- mood 写当前情绪。tone 写适合怎么跟ta说话。
+- concerns 是ta在意的事。traits 是较稳定的性格。
+- care 是安慰时该注意什么。
+旧画像：${JSON.stringify(input.current)}`;
+  const recent = input.recent
+    .slice(-6)
+    .map((m) => `${m.role}: ${clipHan(m.content, 120)}`)
+    .join("\n");
+  const r = await llmChat(
+    [
+      { role: "system", content: sys },
+      { role: "user", content: `称呼：${input.nickname}\n近对话：\n${recent}\n这一句：${input.text.slice(0, 400)}` },
+    ],
+    { json: true, maxTokens: 420 },
+  );
+  if (!r.ok) return input.current;
+  try {
+    const raw = r.text.replace(/^```json\s*/i, "").replace(/```$/i, "");
+    const next = parsePortrait(JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1)));
+    return {
+      summary: next.summary || input.current.summary,
+      mood: next.mood || input.current.mood,
+      tone: next.tone || input.current.tone,
+      situation: next.situation || input.current.situation,
+      concerns: next.concerns.length ? next.concerns : input.current.concerns,
+      traits: next.traits.length ? next.traits : input.current.traits,
+      care: next.care || input.current.care,
+    };
+  } catch {
+    return input.current;
+  }
+}
+
 export async function sisterSay(input: {
   question: string;
   clues: string;
@@ -359,36 +528,38 @@ export async function sisterSay(input: {
   followup?: boolean;
   history?: { role: "user" | "assistant"; content: string }[];
   extra?: string;
+  portrait?: Portrait | null;
 }): Promise<string> {
   const placeRule = input.allowPlace
     ? `用户给过城市，可以轻轻点一下「${input.place ?? ""}」，但重点仍是方位和建筑类型。`
     : "禁止出现任何省、市、区、县名，也不要说北京、东城。地点只写方位（东南西北）和建筑类型（门口、厅堂、水边、高楼、学堂、仓库等）。";
   const sys = `你是「问象」，一位温和、积极、靠得住的知心大姐姐。用奇门盘帮人看事，但不吓人、不保证应验。
 说话要求：
-- 像面对面轻声聊，口语化，柔和，带一点鼓励。
-- 全文不超过 200 个汉字，只写核心：判断倾向、方位或建筑提示、一句可行的建议。
-- 不要分点，不要「一、二、三」，不要 Markdown，不要表情符号。
-- 不要堆术语。必要时只留一个门或星的名字。
+- 像面对面轻声聊，口语化，柔和，带一点鼓励。可按人物肖像调整语气，但不要把画像当众念出来。
+- 全文不超过 500 个汉字。写清判断倾向、方位或建筑提示、一句可行的建议，必要时补一点为什么。
+- 不要分点编号，不要 Markdown，不要表情符号。
+- 不要堆术语。必要时只留一两个门或星的名字。
 - ${placeRule}
 - 供参考，不是定论。`;
   const user = [
-    input.followup ? "这是追问。" : "请就这件事给出这一盘的核心看法。",
+    input.followup ? "这是追问。" : "请就这件事给出这一盘的看法。",
     `问：${input.question}`,
     input.eventName ? `事项：${input.eventName}` : "",
     input.juLabel ? `局：${input.juLabel}` : "",
     input.hourName ? `时辰：${input.hourName}` : "",
     input.clues ? `盘面线索：${input.clues}` : "",
+    portraitLine(input.portrait),
     input.extra ?? "",
   ]
     .filter(Boolean)
     .join("\n");
   const history = (input.history ?? []).slice(-6).map((m) => ({
     role: m.role,
-    content: clipHan(m.content, 180),
+    content: clipHan(m.content, 360),
   }));
   const r = await llmChat(
     [{ role: "system", content: sys }, ...history, { role: "user", content: user }],
-    { maxTokens: 320 },
+    { maxTokens: 1024 },
   );
   if (!r.ok) {
     return clipHan(
@@ -398,7 +569,43 @@ export async function sisterSay(input: {
     );
   }
   const cleaned = input.allowPlace ? r.text : stripNamedPlace(r.text);
-  return clipHan(cleaned, 200);
+  return clipHan(cleaned, 500);
+}
+
+export async function companionSay(input: {
+  text: string;
+  nickname: string;
+  portrait?: Portrait | null;
+  history?: { role: "user" | "assistant"; content: string }[];
+}): Promise<string> {
+  const p = input.portrait;
+  const sys = `你是「问象」，知心大姐姐。这一轮用户没有要起盘，用通用的方式陪伴。
+要求：
+- 积极、向上、安慰、鼓励，但不空洞。
+- 按人物肖像定向关心，不要把画像条款念出来。
+- 全文不超过 500 个汉字。口语，柔和。不要 Markdown，不要表情符号。
+- 如果对方其实想看盘，可以轻轻提一句：看盘有四种测法，按此刻、指定时间、年月日运，或摇个三位数。
+画像：${p?.summary || "还不多"}。心情：${p?.mood || "未知"}。牵挂：${p?.concerns.join("、") || "未知"}。安慰注意：${p?.care || "温和、具体"}。`;
+  const history = (input.history ?? []).slice(-6).map((m) => ({
+    role: m.role as "user" | "assistant",
+    content: clipHan(m.content, 280),
+  }));
+  const r = await llmChat(
+    [
+      { role: "system", content: sys },
+      ...history,
+      { role: "user", content: `${input.nickname}说：${input.text.slice(0, 500)}` },
+    ],
+    { maxTokens: 1024 },
+  );
+  if (!r.ok) {
+    return clipHan(
+      p?.care
+        ? "我在的。你把心里那句再说清楚一点，我听着。想看盘也随时说，我陪你。"
+        : "我在的。想倾诉、想看盘都可以。看盘的话告诉我想按此刻、指定时间、看运势，还是摇个三位数。",
+    );
+  }
+  return clipHan(r.text, 500);
 }
 
 export function missingProfilePrompt(opts: {
@@ -421,5 +628,5 @@ export function missingProfilePrompt(opts: {
 }
 
 export function chitchatFallback(): string {
-  return "我在的。想问事业、感情、求财还是近况，都可以直接说，我帮你看。";
+  return "我在的。想聊近况，或看事业、感情、求财，都可以直接说。看盘的话告诉我想按此刻、指定时间、看运势，还是摇个三位数。";
 }

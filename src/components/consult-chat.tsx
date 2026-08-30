@@ -47,7 +47,7 @@ export function ConsultChat({
         </p>
       ) : null}
 
-      <div className="space-y-3 pb-36">
+      <div className="space-y-3 pb-44">
         {session.messages.map((m) => (
           <div
             key={m.id}
@@ -61,7 +61,7 @@ export function ConsultChat({
             {m.content}
           </div>
         ))}
-        {busy ? <p className="text-xs text-faint">我在看盘，稍等一会儿…</p> : null}
+        {busy ? <p className="text-xs text-faint">我在想，稍等一会儿…</p> : null}
         <div ref={bottom} />
       </div>
 
