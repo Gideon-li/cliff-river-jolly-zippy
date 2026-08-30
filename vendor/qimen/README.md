@@ -53,13 +53,13 @@ npm run example
 | 函数 | 说明 | 要大模型？ |
 |---|---|---|
 | `qimen.chart(q)` | 只排盘 | 否 |
-| `qimen.events(q)` | 十二类事项 | 否 |
+| `qimen.events(q)` | 十二类事项（与该地区县天气同一套模型） | 否 |
 | `qimen.event(q)` | 单事项（`eventId`） | 否 |
 | `qimen.people(q)` | 人事六亲 | 否 |
 | `qimen.directions(q)` | 八门方位 | 否 |
 | `qimen.fortune(q)` | 年 / 月 / 日运 | 否 |
 | `qimen.natal(q)` | 本命年 | 否 |
-| `qimen.weather(q)` | 区县天气 | 否 |
+| `qimen.weather(q)` | 区县天气（含奇门要素细述 `sketch`） | 否 |
 | `qimen.lots("168")` | 三位数求局 | 否 |
 | `qimen.scan(q)` | 全盘一次返回 | 否 |
 | `qimen.consultCompose(q)` | 智断联想 | 是 |

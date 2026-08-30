@@ -100,6 +100,17 @@ export function cluesFromScan(scan: Record<string, unknown> | null | undefined):
   const direction = String(palace.direction ?? best?.direction ?? "");
   const gate = String(palace.gate ?? best?.gate ?? "");
   const star = String(palace.star ?? "");
+  const weather = (scan.weather ?? {}) as {
+    sketch?: {
+      headline?: string;
+      sky?: string;
+      advice?: string;
+      from?: { direction?: string; label?: string; name?: string }[];
+    };
+    district?: { cls?: string; rainProb?: number };
+  };
+  const sketch = weather.sketch ?? {};
+  const wxFrom = Array.isArray(sketch.from) ? sketch.from[0] : null;
   const parts = [
     focus.name ? `事项「${focus.name}」总断${focus.level ?? ""}` : "",
     direction ? `用神在${direction}${bagua}宫` : "",
@@ -107,6 +118,9 @@ export function cluesFromScan(scan: Record<string, unknown> | null | undefined):
     star ? star : "",
     buildingHint(bagua, direction),
     best?.direction ? `较顺的方位偏${best.direction}` : "",
+    sketch.headline ? `天象「${sketch.headline}」` : "",
+    wxFrom?.direction ? `${wxFrom.label ?? "雨"}从${wxFrom.direction}来` : "",
+    sketch.advice ? `天气宜忌：${sketch.advice}` : "",
   ];
   return parts.filter(Boolean).join("；");
 }

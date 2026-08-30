@@ -89,6 +89,73 @@ function slimPeriod(p: Record<string, unknown> | null | undefined) {
   };
 }
 
+function blurPlaceText(s: unknown) {
+  if (typeof s !== "string") return s;
+  return s
+    .replace(/[\u4e00-\u9fa5]{2,12}(特别行政区|自治区|省|市|区|县)/g, "这一带")
+    .replace(/这一带这一带+/g, "这一带");
+}
+
+function slimSketch(d: Record<string, unknown> | null | undefined) {
+  if (!d) return null;
+  const aspects = Array.isArray(d.aspects)
+    ? (d.aspects as Record<string, unknown>[])
+        .filter((a) => a.level && a.level !== "无")
+        .map((a) => ({
+          key: a.key,
+          label: a.label,
+          level: a.level,
+          kind: a.kind,
+          text: a.text,
+        }))
+    : [];
+  const from = Array.isArray(d.from)
+    ? (d.from as Record<string, unknown>[]).map((f) => ({
+        key: f.key,
+        label: f.label,
+        palace: f.palace,
+        direction: f.direction,
+        name: f.name,
+        text: f.text,
+      }))
+    : [];
+  return {
+    headline: d.headline,
+    sky: d.sky,
+    kan: d.kan,
+    from,
+    aspects,
+    narrative: blurPlaceText(d.narrative),
+    advice: blurPlaceText(d.advice),
+  };
+}
+
+function slimWxCell(cell: Record<string, unknown> | null | undefined) {
+  if (!cell) return null;
+  return {
+    cls: cell.cls,
+    probability: cell.probability,
+    rainProb: cell.rainProb,
+    level: cell.level,
+    detail: slimSketch(cell.detail as Record<string, unknown> | undefined),
+  };
+}
+
+function slimWeather(weather: Record<string, unknown> | null | undefined) {
+  if (!weather) return null;
+  const district = weather.district as Record<string, unknown> | undefined;
+  const climateBand = weather.climateBand as Record<string, unknown> | undefined;
+  const sketch = slimSketch(
+    (weather.sketch as Record<string, unknown> | undefined) ??
+      (district?.detail as Record<string, unknown> | undefined),
+  );
+  return {
+    district: slimWxCell(district),
+    climateBand: slimWxCell(climateBand),
+    sketch,
+  };
+}
+
 export function slimScan(raw: Record<string, unknown>) {
   const chart = (raw.chart ?? {}) as Record<string, unknown>;
   const palacesIn = (chart.palaces ?? {}) as Record<string, Record<string, unknown>>;
@@ -98,13 +165,11 @@ export function slimScan(raw: Record<string, unknown>) {
     ? raw.events.map((x) => slimEvent(x as Record<string, unknown>))
     : [];
   const fortune = raw.fortune as Record<string, Record<string, unknown>> | undefined;
-  const weather = raw.weather as
-    | { district?: Record<string, unknown>; climateBand?: Record<string, unknown> }
-    | undefined;
   return asJson({
     subject: raw.subject,
     location: raw.location,
     civil: raw.civil,
+    model: raw.model ?? null,
     chart: {
       timeLabel: chart.timeLabel,
       hourName: chart.hourName,
@@ -143,28 +208,7 @@ export function slimScan(raw: Record<string, unknown>) {
         }
       : null,
     natal: raw.natal,
-    weather: weather
-      ? {
-          district: weather.district
-            ? {
-                cls: weather.district.cls,
-                probability: weather.district.probability,
-                rainProb: weather.district.rainProb,
-                reading: weather.district.reading,
-                level: weather.district.level,
-              }
-            : null,
-          climateBand: weather.climateBand
-            ? {
-                cls: weather.climateBand.cls,
-                probability: weather.climateBand.probability,
-                rainProb: weather.climateBand.rainProb,
-                reading: weather.climateBand.reading,
-                level: weather.climateBand.level,
-              }
-            : null,
-        }
-      : null,
+    weather: slimWeather(raw.weather as Record<string, unknown> | undefined),
   } as JsonValue);
 }
 
@@ -174,23 +218,44 @@ export async function runScan(body: QueryBody) {
     const raw = (await qimen.scan(body)) as Record<string, unknown>;
     return slimScan(raw);
   } catch (err) {
-    // Weather model file missing on some deploys — still return the chart.
-    const raw = qimen.events(body) as Record<string, unknown>;
-    const focus = qimen.event(body) as Record<string, unknown>;
+    const raw = (await qimen.events(body)) as Record<string, unknown>;
+    const focus = (await qimen.event(body)) as Record<string, unknown>;
     let fortune = null;
     try {
-      fortune = (qimen.fortune(body) as { fortune?: Record<string, unknown> }).fortune ?? null;
+      fortune = ((await qimen.fortune(body)) as { fortune?: Record<string, unknown> }).fortune ?? null;
     } catch {
       fortune = null;
+    }
+    let people: unknown = null;
+    let directions: unknown = null;
+    try {
+      people = ((await qimen.people(body)) as { people?: unknown }).people ?? null;
+      directions = ((await qimen.directions(body)) as { directions?: unknown }).directions ?? null;
+    } catch {
+      people = null;
+      directions = null;
     }
     return slimScan({
       ...raw,
       focus: (focus as { event?: unknown }).event ?? focus,
       fortune,
+      people,
+      directions,
       weather: null,
       error: err instanceof Error ? err.message : String(err),
     });
   }
+}
+
+export async function runWeather(body: QueryBody) {
+  const qimen = await getQimen();
+  const r = (await qimen.weather(body)) as Record<string, unknown>;
+  return asJson({
+    civil: r.civil,
+    location: r.location,
+    model: r.model ?? null,
+    weather: slimWeather(r.weather as Record<string, unknown> | undefined),
+  });
 }
 
 export async function runCompose(body: QueryBody) {
