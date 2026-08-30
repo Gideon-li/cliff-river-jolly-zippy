@@ -1,9 +1,10 @@
 import { ArrowUp } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { sendConsult } from "@/lib/fn/divination";
 
 export type ChatMessage = {
   id: number;
@@ -21,6 +22,89 @@ export type ChatSession = {
   messages: ChatMessage[];
 };
 
+const threadHold = new Map<string, ChatSession>();
+
+function fresher(current: ChatSession | null, incoming: ChatSession): ChatSession {
+  if (!current) return incoming;
+  if (current.id === incoming.id) {
+    return incoming.messages.length < current.messages.length ? current : incoming;
+  }
+  if (current.messages.length > incoming.messages.length) return current;
+  return incoming;
+}
+
+export function useConsultChat(key: string, loader: () => Promise<ChatSession>) {
+  const [session, setSession] = useState<ChatSession | null>(() => threadHold.get(key) ?? null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const sessionRef = useRef<ChatSession | null>(session);
+  const loadRef = useRef(loader);
+  sessionRef.current = session;
+  loadRef.current = loader;
+
+  const adopt = useCallback(
+    (incoming: ChatSession, hold = key) => {
+      setSession((cur) => {
+        const next = fresher(cur, incoming);
+        threadHold.set(hold, next);
+        threadHold.set(next.id, next);
+        sessionRef.current = next;
+        return next;
+      });
+    },
+    [key],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadRef
+      .current()
+      .then((thread) => {
+        if (!cancelled) adopt(thread);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : "无法开始问事");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [key, adopt]);
+
+  async function send(text: string) {
+    const current = sessionRef.current;
+    if (!current || busy) return;
+    setError("");
+    setBusy(true);
+    const optimistic: ChatSession = {
+      ...current,
+      messages: [
+        ...current.messages,
+        {
+          id: Date.now(),
+          role: "user",
+          content: text,
+          kind: "user",
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    };
+    sessionRef.current = optimistic;
+    threadHold.set(key, optimistic);
+    threadHold.set(current.id, optimistic);
+    setSession(optimistic);
+    try {
+      const r = await sendConsult({ data: { sessionId: current.id, text } });
+      if (r.session) adopt(r.session as ChatSession);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "发送失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return { session, busy, error, send };
+}
+
 export function ConsultChat({
   session,
   busy,
@@ -33,46 +117,50 @@ export function ConsultChat({
   onSend: (text: string) => void;
 }) {
   const [text, setText] = useState("");
-  const bottom = useRef<HTMLDivElement>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+  const lastId = session.messages[session.messages.length - 1]?.id;
 
   useEffect(() => {
-    bottom.current?.scrollIntoView({ behavior: "smooth" });
-  }, [session.messages.length, busy]);
+    const el = scroller.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [session.messages.length, lastId, busy]);
 
   return (
-    <div className="flex flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       {session.juLabel ? (
-        <p className="mb-3 text-xs text-faint">
+        <p className="mb-2 shrink-0 text-xs text-faint">
           {session.juLabel}
           {session.hourName ? ` · ${session.hourName.replace(/时$/, "")}时` : ""}
         </p>
       ) : null}
 
-      <div className="space-y-3 pb-44">
-        {session.messages.map((m) => (
-          <div
-            key={m.id}
-            className={cn(
-              "max-w-[92%] rounded-[var(--radius-lg)] px-3.5 py-2.5 text-sm leading-6 whitespace-pre-wrap",
-              m.role === "user"
-                ? "ml-auto bg-cinnabar text-paper"
-                : "border border-line bg-paper-2 text-ink",
-            )}
-          >
-            {m.content}
-            {m.kind === "paywall" ? (
-              <Link to="/wallet" className="mt-2 block text-cinnabar underline-offset-4 hover:underline">
-                去充值
-              </Link>
-            ) : null}
-          </div>
-        ))}
-        {busy ? <p className="text-xs text-faint">我在想，稍等一会儿…</p> : null}
-        <div ref={bottom} />
+      <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+        <div className="space-y-3 pb-3">
+          {session.messages.map((m, i) => (
+            <div
+              key={`${m.id}-${m.kind}-${i}`}
+              className={cn(
+                "max-w-[92%] rounded-[var(--radius-lg)] px-3.5 py-2.5 text-sm leading-6 whitespace-pre-wrap",
+                m.role === "user"
+                  ? "ml-auto bg-cinnabar text-paper"
+                  : "border border-line bg-paper-2 text-ink",
+              )}
+            >
+              {m.content}
+              {m.kind === "paywall" ? (
+                <Link to="/wallet" className="mt-2 block text-cinnabar underline-offset-4 hover:underline">
+                  去充值
+                </Link>
+              ) : null}
+            </div>
+          ))}
+          {busy ? <p className="text-xs text-faint">我在想，稍等一会儿…</p> : null}
+        </div>
       </div>
 
       <form
-        className="sticky bottom-24 z-10 mt-4 rounded-[var(--radius-xl)] border border-line bg-paper-2 p-2"
+        className="shrink-0 border-t border-line bg-paper pt-2 pb-2"
         onSubmit={(e) => {
           e.preventDefault();
           const q = text.trim();
@@ -81,7 +169,7 @@ export function ConsultChat({
           onSend(q);
         }}
       >
-        <div className="flex gap-2">
+        <div className="flex gap-2 rounded-[var(--radius-xl)] border border-line bg-paper-2 p-2">
           <Input
             value={text}
             onChange={(e) => setText(e.target.value)}
@@ -94,7 +182,7 @@ export function ConsultChat({
         </div>
         <p className="pt-1 text-center text-[10px] tracking-[0.18em] text-faint">玄学预测，仅供娱乐</p>
       </form>
-      {error ? <p className="mt-2 text-xs text-cinnabar">{error}</p> : null}
+      {error ? <p className="mt-1 shrink-0 text-xs text-cinnabar">{error}</p> : null}
     </div>
   );
 }

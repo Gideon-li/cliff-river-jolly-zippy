@@ -645,9 +645,12 @@ export const ensureThread = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const sql = await getSql();
     const existing = await sql<SessionRow>`
-      select * from divination_sessions
-      where user_id = ${context.userId}
-      order by created_at desc
+      select d.* from divination_sessions d
+      left join (
+        select session_id, max(id) as last_id from messages group by session_id
+      ) m on m.session_id = d.id
+      where d.user_id = ${context.userId}
+      order by coalesce(m.last_id, 0) desc, d.created_at desc
       limit 1
     `;
     if (existing[0]) {
@@ -815,7 +818,7 @@ export const sendConsult = createServerFn({ method: "POST" })
       return replyText(session.id, context.userId, msg, "paywall");
     };
 
-    const cast = async (mode: CastMode, openNew = hasChart) => {
+    const cast = async (mode: CastMode) => {
       try {
         return await proceedCast({
           userId: context.userId,
@@ -829,7 +832,7 @@ export const sendConsult = createServerFn({ method: "POST" })
           fortuneSpan,
           question,
           declined,
-          openNew,
+          openNew: false,
         });
       } catch (err) {
         if (err instanceof NeedPayError || (err instanceof Error && err.name === "NeedPayError")) {
@@ -851,7 +854,7 @@ export const sendConsult = createServerFn({ method: "POST" })
         asCastMode(pending.mode) ||
         asCastMode(inferMode(extracted, session.mode as SessionMode)) ||
         "now";
-      return cast(mode, true);
+      return cast(mode);
     }
     if (pending?.kind === "new_chart" && no) {
       await writePending(session.id, context.userId, null);
@@ -869,13 +872,13 @@ export const sendConsult = createServerFn({ method: "POST" })
         asCastMode(pending.mode) ||
         asCastMode(inferMode(extracted, session.mode as SessionMode)) ||
         "now";
-      return cast(mode, true);
+      return cast(mode);
     }
 
     if (pending?.kind === "need_profile") {
       if (declined || !hasGaps(gapsOf(profile, loc))) {
         const mode = picked || asCastMode(pending.mode) || "now";
-        return cast(mode, hasChart);
+        return cast(mode);
       }
       if (extracted.gender || extracted.birthYear || extracted.location || extracted.kind === "provide_profile") {
         await writePending(session.id, context.userId, { ...pending, askedProfile: true });
@@ -895,10 +898,10 @@ export const sendConsult = createServerFn({ method: "POST" })
       pending?.kind === "need_span" ||
       pending?.kind === "need_mode"
     ) {
-      if (picked) return cast(picked, hasChart);
+      if (picked) return cast(picked);
       const confirmed = asCastMode(pending.mode);
-      if (yes && confirmed) return cast(confirmed, hasChart);
-      if (wantsReading(extracted)) return cast(autoMode(), hasChart);
+      if (yes && confirmed) return cast(confirmed);
+      if (wantsReading(extracted)) return cast(autoMode());
       return comfort();
     }
 
@@ -914,7 +917,7 @@ export const sendConsult = createServerFn({ method: "POST" })
         return replyText(session.id, context.userId, text, "system");
       }
       if (!wantsReading(extracted)) return comfort();
-      return cast(autoMode(), false);
+      return cast(autoMode());
     }
 
     if (!wantsReading(extracted) && extracted.kind !== "followup" && extracted.kind !== "ask_question") {

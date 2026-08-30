@@ -26,22 +26,31 @@ export function AppShell({
   title,
   children,
   hideTabs,
+  fill,
 }: {
   title?: string;
   children: React.ReactNode;
   hideTabs?: boolean;
+  fill?: boolean;
 }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   return (
-    <div className="mx-auto flex min-h-dvh w-full max-w-[430px] flex-col bg-paper shadow-[var(--shadow-sheet)]">
-      <header className="sticky top-0 z-20 border-b border-line bg-paper/92 px-5 pt-3 pb-3 backdrop-blur">
+    <div className="mx-auto flex h-dvh w-full max-w-[430px] flex-col overflow-hidden bg-paper shadow-[var(--shadow-sheet)]">
+      <header className="shrink-0 border-b border-line bg-paper/92 px-5 pt-3 pb-3">
         <p className="text-[10px] tracking-[0.42em] text-faint">问象 · 奇门智断</p>
         <h1 className="mt-1 font-display text-xl text-ink">{title ?? "问象"}</h1>
         <EntertainmentNotice className="mt-2" />
       </header>
-      <main className={cn("flex-1 px-5 py-4", hideTabs ? "pb-8" : "pb-28")}>{children}</main>
+      <main
+        className={cn(
+          "min-h-0 flex-1 px-5 pt-4",
+          fill ? "flex flex-col overflow-hidden pb-2" : "overflow-y-auto pb-4",
+        )}
+      >
+        {children}
+      </main>
       {hideTabs ? null : (
-        <nav className="fixed bottom-0 left-1/2 z-20 w-full max-w-[430px] -translate-x-1/2 border-t border-line bg-paper-2/95 backdrop-blur">
+        <nav className="shrink-0 border-t border-line bg-paper-2">
           <ul className="grid grid-cols-4">
             {TABS.map((tab) => {
               const active = tab.to === "/" ? pathname === "/" : pathname.startsWith(tab.to);
