@@ -10,11 +10,23 @@ import {
   type GeoLocation,
   type SessionMode,
 } from "@/lib/app-types";
-import { parseIntent, shouldOpenNewLotsChart, shouldOpenNewTimeChart } from "@/lib/intent.server";
+import {
+  GREETING,
+  chitchatFallback,
+  cluesFromScan,
+  extractTurn,
+  inferMode,
+  isPreciseLocation,
+  missingProfilePrompt,
+  shouldOpenNewLotsChart,
+  shouldOpenNewTimeChart,
+  sisterSay,
+  type ExtractedTurn,
+} from "@/lib/agent.server";
 import { resolveLocation } from "@/lib/location.server";
-import { runAsk, runCompose, runLots, runScan, type QueryBody } from "@/lib/qimen.server";
+import { runLots, runScan, type QueryBody } from "@/lib/qimen.server";
 import { hourNameOf, shichenRangeLabel } from "@/lib/shichen";
-import { formatBeijing, newId, type JsonValue } from "@/lib/utils";
+import { newId, type JsonValue } from "@/lib/utils";
 
 const eventIdSchema = z.enum([
   "wealth",
@@ -86,6 +98,37 @@ type ProfileLite = {
   disabled: boolean;
 };
 
+type PendingBody = {
+  kind?: "need_profile" | "new_chart";
+  declined?: boolean;
+  askedProfile?: boolean;
+  mode?: SessionMode;
+  eventId?: EventId;
+  civil?: CivilTime;
+  question?: string;
+  lotsCode?: string;
+  fortuneSpan?: "day" | "month" | "year";
+};
+
+function asObj(v: JsonValue): { [k: string]: JsonValue } {
+  return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+}
+
+function civilOf(scan: JsonValue): CivilTime {
+  const obj = asObj(scan);
+  const chart = asObj(obj.chart ?? null);
+  const c = (obj.civil ?? chart.beijing) as CivilTime | undefined;
+  if (c && c.year) return c;
+  const now = new Date();
+  return {
+    year: now.getFullYear(),
+    month: now.getMonth() + 1,
+    day: now.getDate(),
+    hour: now.getHours(),
+    minute: now.getMinutes(),
+  };
+}
+
 async function loadProfile(userId: string): Promise<ProfileLite> {
   const sql = await getSql();
   const rows = await sql<ProfileLite>`
@@ -138,25 +181,6 @@ function bodyFrom(opts: {
   };
 }
 
-function asObj(v: JsonValue): { [k: string]: JsonValue } {
-  return v && typeof v === "object" && !Array.isArray(v) ? v : {};
-}
-
-function civilOf(scan: JsonValue): CivilTime {
-  const obj = asObj(scan);
-  const chart = asObj(obj.chart ?? null);
-  const c = (obj.civil ?? chart.beijing) as CivilTime | undefined;
-  if (c && c.year) return c;
-  const now = new Date();
-  return {
-    year: now.getFullYear(),
-    month: now.getMonth() + 1,
-    day: now.getDate(),
-    hour: now.getHours(),
-    minute: now.getMinutes(),
-  };
-}
-
 function packSession(row: SessionRow, messages: MsgRow[] = []) {
   return {
     id: row.id,
@@ -203,7 +227,147 @@ async function insertMessage(
   return rows[0]!;
 }
 
-async function saveSession(opts: {
+async function loadPacked(id: string, userId: string) {
+  const sql = await getSql();
+  const rows = await sql<SessionRow>`
+    select * from divination_sessions where id = ${id} and user_id = ${userId} limit 1
+  `;
+  if (!rows[0]) throw new Error("找不到这一盘");
+  const messages = await sql<MsgRow>`
+    select id, session_id, role, content, kind, created_at
+    from messages where session_id = ${id} and user_id = ${userId}
+    order by id asc
+  `;
+  return packSession(rows[0], messages);
+}
+
+async function applyProfilePatch(
+  userId: string,
+  extracted: ExtractedTurn,
+): Promise<ProfileLite> {
+  const sql = await getSql();
+  await sql`
+    insert into profiles (user_id, nickname)
+    values (${userId}, ${""})
+    on conflict (user_id) do nothing
+  `;
+  if (extracted.gender) {
+    await sql`update profiles set gender = ${extracted.gender}, updated_at = now() where user_id = ${userId}`;
+  }
+  if (extracted.birthYear) {
+    await sql`update profiles set birth_year = ${extracted.birthYear}, updated_at = now() where user_id = ${userId}`;
+  }
+  if (extracted.location) {
+    await sql`
+      update profiles set
+        province = ${extracted.location.province},
+        city = ${extracted.location.city},
+        district = ${extracted.location.district},
+        updated_at = now()
+      where user_id = ${userId}
+    `;
+  }
+  return loadProfile(userId);
+}
+
+function locFromProfile(profile: ProfileLite, fallback: GeoLocation | null): GeoLocation {
+  if (profile.province) {
+    return {
+      province: profile.province,
+      city: profile.city || profile.province,
+      district: profile.district || profile.city || profile.province,
+      source: "profile",
+    };
+  }
+  return resolveLocation(profile, fallback);
+}
+
+function gapsOf(profile: ProfileLite, loc: GeoLocation) {
+  return {
+    gender: !profile.gender,
+    birthYear: !profile.birth_year,
+    location: !isPreciseLocation(loc),
+  };
+}
+
+function hasGaps(g: { gender: boolean; birthYear: boolean; location: boolean }) {
+  return g.gender || g.birthYear || g.location;
+}
+
+async function writePending(sessionId: string, userId: string, pending: PendingBody | null) {
+  const sql = await getSql();
+  const raw = pending ? JSON.stringify(pending) : null;
+  await sql`update divination_sessions set pending_json = ${raw} where id = ${sessionId} and user_id = ${userId}`;
+}
+
+async function fillChart(opts: {
+  userId: string;
+  sessionId: string;
+  mode: SessionMode;
+  eventId: EventId;
+  loc: GeoLocation;
+  profile: ProfileLite;
+  civil?: CivilTime;
+  lotsCode?: string | null;
+  fortuneSpan?: "day" | "month" | "year" | null;
+  question: string;
+}) {
+  const now = new Date();
+  let lots = null as { ju: number; steps: string[]; code: string } | null;
+  if (opts.mode === "lots") {
+    const code = opts.lotsCode ?? "168";
+    lots = (await runLots(code)) as { ju: number; steps: string[]; code: string };
+  }
+  const body = bodyFrom({
+    profile: opts.profile,
+    loc: opts.loc.province ? opts.loc : BEIJING_LOCATION,
+    civil: opts.mode === "timed" ? opts.civil : undefined,
+    eventId: opts.eventId,
+    casting: opts.mode === "lots" ? "lots" : "chaibu",
+    lotsCode: lots?.code ?? opts.lotsCode,
+    lotsMonth: (opts.civil?.month ?? now.getMonth() + 1) as number,
+    question: opts.question,
+  });
+  const scan = await runScan(body);
+  const civil = civilOf(scan);
+  const chart = asObj(asObj(scan).chart ?? null) as { hourName?: string; ju?: { label?: string } };
+  const juLabel = chart.ju?.label ?? "";
+  const hourName = chart.hourName ?? hourNameOf(civil.hour);
+  const sql = await getSql();
+  await sql`
+    update divination_sessions set
+      mode = ${opts.mode},
+      fortune_span = ${opts.fortuneSpan ?? (opts.mode === "fortune" ? "day" : null)},
+      lots_code = ${lots?.code ?? opts.lotsCode ?? null},
+      event_id = ${opts.eventId},
+      civil_year = ${civil.year},
+      civil_month = ${civil.month},
+      civil_day = ${civil.day},
+      civil_hour = ${civil.hour},
+      civil_minute = ${civil.minute},
+      hour_name = ${hourName},
+      ju_label = ${juLabel},
+      location_json = ${JSON.stringify(opts.loc)},
+      chart_json = ${JSON.stringify(asObj(scan).chart ?? {})},
+      scan_json = ${JSON.stringify(scan)},
+      pending_json = null
+    where id = ${opts.sessionId} and user_id = ${opts.userId}
+  `;
+  const allowPlace = isPreciseLocation(opts.loc);
+  const text = await sisterSay({
+    question: opts.question,
+    clues: cluesFromScan(scan as Record<string, unknown>),
+    juLabel,
+    hourName,
+    eventName: EVENT_NAME[opts.eventId],
+    allowPlace,
+    place: allowPlace ? `${opts.loc.city}` : undefined,
+  });
+  await insertMessage(opts.sessionId, opts.userId, "assistant", text, "compose");
+  return loadPacked(opts.sessionId, opts.userId);
+}
+
+async function saveNewSession(opts: {
   userId: string;
   mode: SessionMode;
   fortuneSpan?: string | null;
@@ -237,39 +401,7 @@ async function saveSession(opts: {
   return rows[0]!;
 }
 
-function openingCopy(mode: SessionMode, scan: JsonValue, eventId: EventId | null) {
-  const obj = scan && typeof scan === "object" && !Array.isArray(scan) ? scan : {};
-  const chart = (obj.chart ?? {}) as { ju?: { label?: string }; hourName?: string; timeLabel?: string };
-  const loc = (obj.location ?? {}) as { province?: string; city?: string; district?: string };
-  const place = [loc.province, loc.city, loc.district].filter(Boolean).join(" ");
-  const eventName = eventId ? EVENT_NAME[eventId] : "总盘";
-  const range = civilOf(scan);
-  if (mode === "lots") {
-    return `已按摇卦起盘。${chart.ju?.label ?? ""}。当前事项按「${eventName}」来看。你可以继续追问同一类事情。`;
-  }
-  if (mode === "fortune") {
-    return `已起年、月、日运。下面是智断联想。你可以继续问某一段运势。`;
-  }
-  return `已按北京时间 ${formatBeijing(range)}（${shichenRangeLabel(range.hour)}）起盘。${chart.ju?.label ?? ""}。地点：${place || "北京"}。默认以智断联想作答；若你有具体事情，我会结合盘面追问。`;
-}
-
-function sceneText(scene: JsonValue | null | undefined): string {
-  if (!scene) return "";
-  const obj = asObj(scene);
-  const expansion = Array.isArray(obj.expansion) ? obj.expansion : [];
-  const lines = [
-    obj.scene && String(obj.scene),
-    obj.content && `事情：${obj.content}`,
-    obj.time && `时间：${obj.time}`,
-    obj.place && `地点：${obj.place}`,
-    obj.people && `人物：${obj.people}`,
-    expansion.length ? `延伸：${expansion.map(String).join("；")}` : "",
-    obj.caution && `提醒：${obj.caution}`,
-  ].filter(Boolean);
-  return lines.join("\n");
-}
-
-type OpenInput = {
+async function openCastSession(userId: string, data: {
   mode: SessionMode;
   eventId?: EventId;
   question?: string;
@@ -277,69 +409,80 @@ type OpenInput = {
   lotsCode?: string;
   fortuneSpan?: "day" | "month" | "year";
   location?: GeoLocation;
-};
-
-async function openSessionForUser(userId: string, data: OpenInput) {
+}) {
   const profile = await loadProfile(userId);
-  const loc = resolveLocation(profile, data.location ?? null);
+  const loc = locFromProfile(profile, data.location ?? null);
   const eventId = (data.eventId ?? "wealth") as EventId;
-  let lots = null as { ju: number; steps: string[]; code: string } | null;
-  if (data.mode === "lots") {
-    const code = data.lotsCode ?? "168";
-    lots = (await runLots(code)) as { ju: number; steps: string[]; code: string };
-  }
-  const now = new Date();
-  const civil = data.mode === "timed" && data.civil ? data.civil : undefined;
-  const question =
-    data.question?.trim() ||
-    (data.mode === "fortune"
-      ? "请就年运、月运、日运作智断联想"
-      : `请就「${EVENT_NAME[eventId]}」围绕「${profile.nickname || "问事人"}」联想一件最合理的具体事情。`);
-  const body = bodyFrom({
-    profile,
-    loc: loc.province ? loc : BEIJING_LOCATION,
-    civil,
-    eventId,
-    casting: data.mode === "lots" ? "lots" : "chaibu",
-    lotsCode: lots?.code ?? data.lotsCode,
-    lotsMonth: (data.civil?.month ?? now.getMonth() + 1) as number,
-    question,
-  });
-  const scan = await runScan(body);
-  const row = await saveSession({
+  const question = data.question?.trim() || "请帮我看看最近的情况";
+  const row = await saveNewSession({
     userId,
-    mode: data.mode,
-    fortuneSpan: data.fortuneSpan ?? (data.mode === "fortune" ? "day" : null),
-    lotsCode: lots?.code ?? data.lotsCode ?? null,
+    mode: "inbox",
+    loc,
+    scan: {},
+    eventId,
+  });
+  return fillChart({
+    userId,
+    sessionId: row.id,
+    mode: data.mode === "inbox" ? "now" : data.mode,
     eventId,
     loc,
-    scan,
+    profile,
+    civil: data.civil,
+    lotsCode: data.lotsCode,
+    fortuneSpan: data.fortuneSpan,
+    question,
   });
-  await insertMessage(row.id, userId, "system", openingCopy(data.mode, scan, eventId), "system");
-  try {
-    const composed = await runCompose({ ...body, question });
-    const composeText = sceneText(asObj(composed).scene ?? null);
-    if (composeText) {
-      await insertMessage(row.id, userId, "assistant", composeText, "compose");
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "智断联想暂时无法完成，你可以先看盘面，或换个问题再试。";
-    await insertMessage(row.id, userId, "assistant", msg, "error");
-  }
-  const sql = await getSql();
-  const messages = await sql<MsgRow>`
-    select id, session_id, role, content, kind, created_at
-    from messages where session_id = ${row.id} and user_id = ${userId}
-    order by id asc
-  `;
-  return { session: packSession(row, messages), lots };
 }
+
+export const ensureThread = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator(
+    z.object({
+      location: locSchema.optional(),
+    }),
+  )
+  .handler(async ({ context, data }) => {
+    const sql = await getSql();
+    const existing = await sql<SessionRow>`
+      select * from divination_sessions
+      where user_id = ${context.userId}
+      order by created_at desc
+      limit 1
+    `;
+    if (existing[0]) {
+      if (data.location?.source === "gps") {
+        const loc = data.location;
+        await sql`
+          update profiles set
+            province = ${loc.province},
+            city = ${loc.city},
+            district = ${loc.district},
+            updated_at = now()
+          where user_id = ${context.userId}
+        `;
+      }
+      return loadPacked(existing[0].id, context.userId);
+    }
+    const profile = await loadProfile(context.userId);
+    const loc = locFromProfile(profile, data.location ?? null);
+    const id = newId();
+    await sql`
+      insert into divination_sessions (
+        id, user_id, mode, location_json, chart_json, scan_json
+      ) values (
+        ${id}, ${context.userId}, ${"inbox"}, ${JSON.stringify(loc)}, ${"{}"}, ${"{}"}
+      )
+    `;
+    await insertMessage(id, context.userId, "assistant", GREETING, "greet");
+    return loadPacked(id, context.userId);
+  });
 
 export const openSession = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator(
     z.object({
-      mode: z.enum(["now", "timed", "fortune", "lots"]),
+      mode: z.enum(["now", "timed", "fortune", "lots", "inbox"]),
       eventId: eventIdSchema.optional(),
       question: z.string().trim().max(400).optional(),
       civil: civilSchema.optional(),
@@ -349,7 +492,8 @@ export const openSession = createServerFn({ method: "POST" })
     }),
   )
   .handler(async ({ context, data }) => {
-    return openSessionForUser(context.userId, data);
+    const session = await openCastSession(context.userId, data);
+    return { session };
   });
 
 export const listSessions = createServerFn({ method: "GET" })
@@ -357,7 +501,8 @@ export const listSessions = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     const sql = await getSql();
     const rows = await sql<SessionRow>`
-      select * from divination_sessions where user_id = ${context.userId}
+      select * from divination_sessions
+      where user_id = ${context.userId} and mode != ${"inbox"}
       order by created_at desc limit 40
     `;
     return rows.map((r) => packSession(r));
@@ -367,17 +512,7 @@ export const getSession = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator(z.object({ id: z.string().min(1) }))
   .handler(async ({ context, data }) => {
-    const sql = await getSql();
-    const rows = await sql<SessionRow>`
-      select * from divination_sessions where id = ${data.id} and user_id = ${context.userId} limit 1
-    `;
-    if (!rows[0]) throw new Error("找不到这一盘");
-    const messages = await sql<MsgRow>`
-      select id, session_id, role, content, kind, created_at
-      from messages where session_id = ${data.id} and user_id = ${context.userId}
-      order by id asc
-    `;
-    return packSession(rows[0], messages);
+    return loadPacked(data.id, context.userId);
   });
 
 export const sendConsult = createServerFn({ method: "POST" })
@@ -395,8 +530,8 @@ export const sendConsult = createServerFn({ method: "POST" })
     `;
     if (!rows[0]) throw new Error("找不到这一盘");
     const session = rows[0];
-    const profile = await loadProfile(context.userId);
-    const loc = JSON.parse(session.location_json || "{}") as GeoLocation;
+    let profile = await loadProfile(context.userId);
+    let loc = locFromProfile(profile, JSON.parse(session.location_json || "{}") as GeoLocation);
     const chartCivil: CivilTime = {
       year: session.civil_year ?? 0,
       month: session.civil_month ?? 0,
@@ -406,85 +541,154 @@ export const sendConsult = createServerFn({ method: "POST" })
     };
     await insertMessage(session.id, context.userId, "user", data.text, "user");
 
-    const pending = session.pending_json
-      ? (JSON.parse(session.pending_json) as {
-          mode?: SessionMode;
-          eventId?: EventId;
-          civil?: CivilTime;
-          question?: string;
-          lotsCode?: string;
-        })
-      : null;
-    const intent = await parseIntent({
+    const pending = session.pending_json ? (JSON.parse(session.pending_json) as PendingBody) : null;
+    const extracted = await extractTurn({
       text: data.text,
       mode: session.mode as SessionMode,
-      eventId: (session.event_id as EventId | null) ?? "wealth",
-      chartCivil,
-      hasPending: Boolean(pending),
+      eventId: (session.event_id as EventId | null) ?? null,
+      chartCivil: chartCivil.year ? chartCivil : null,
+      hasPending: Boolean(pending && pending.kind === "new_chart"),
+      awaitingProfile: Boolean(pending && pending.kind === "need_profile"),
     });
 
-    if (pending && (intent.kind === "confirm_yes" || /^(是|好|要|开|重新|可以|行)/.test(data.text.trim()))) {
-      await sql`update divination_sessions set pending_json = null where id = ${session.id} and user_id = ${context.userId}`;
-      const nextMode = (pending.mode as SessionMode) || (session.mode as SessionMode);
-      const opened = await openSessionForUser(context.userId, {
-        mode: nextMode,
-        eventId: (pending.eventId as EventId) || (session.event_id as EventId) || "wealth",
-        question: String(pending.question ?? data.text),
-        civil: pending.civil as CivilTime | undefined,
-        lotsCode: (pending.lotsCode as string | undefined) ?? session.lots_code ?? undefined,
+    profile = await applyProfilePatch(context.userId, extracted);
+    loc = locFromProfile(profile, loc);
+
+    const yes =
+      extracted.kind === "confirm_yes" || /^(是|好|要|开|重新|可以|行|嗯)/.test(data.text.trim());
+    const no = extracted.kind === "confirm_no" || /^(不|先不|不用|取消)/.test(data.text.trim());
+
+    if (pending?.kind === "new_chart" && yes) {
+      await writePending(session.id, context.userId, null);
+      const opened = await openCastSession(context.userId, {
+        mode: (pending.mode as SessionMode) || inferMode(extracted, session.mode as SessionMode),
+        eventId: pending.eventId || (session.event_id as EventId) || "wealth",
+        question: String(pending.question ?? extracted.question ?? data.text),
+        civil: pending.civil,
+        lotsCode: pending.lotsCode ?? session.lots_code ?? undefined,
+        fortuneSpan: pending.fortuneSpan,
         location: loc,
       });
-      return { type: "new_session" as const, session: opened.session, notice: "已按你的确认另开一盘。" };
+      return { type: "new_session" as const, session: opened };
     }
-    if (pending && (intent.kind === "confirm_no" || /^(不|先不|不用|取消)/.test(data.text.trim()))) {
-      await sql`update divination_sessions set pending_json = null where id = ${session.id} and user_id = ${context.userId}`;
-      const msg = await insertMessage(
-        session.id,
-        context.userId,
-        "assistant",
-        "好，继续看当前这一盘。你还可以追问同一件事情。",
-        "system",
-      );
-      return {
-        type: "reply" as const,
-        message: { id: msg.id, role: "assistant" as const, content: msg.content, kind: msg.kind },
-      };
+    if (pending?.kind === "new_chart" && no) {
+      await writePending(session.id, context.userId, null);
+      const text = "好，咱们继续看这一盘。你把想问的细节再说说就行。";
+      await insertMessage(session.id, context.userId, "assistant", text, "system");
+      return { type: "reply" as const, session: await loadPacked(session.id, context.userId) };
     }
 
-    const nextEvent = (intent.eventId ?? (session.event_id as EventId) ?? "wealth") as EventId;
-    const timeShift = shouldOpenNewTimeChart(session.mode as SessionMode, chartCivil, intent.civil);
+    const nextEvent = (extracted.eventId ?? (session.event_id as EventId) ?? "wealth") as EventId;
+    const nextMode = inferMode(extracted, session.mode as SessionMode);
+    const question = extracted.question || pending?.question || data.text;
+    const hasChart = Boolean(session.ju_label);
+    const gaps = gapsOf(profile, loc);
+    const declined = extracted.declinedProfile || extracted.kind === "decline_profile" || Boolean(pending?.declined);
+
+    if (pending?.kind === "need_profile") {
+      const stillMissing = hasGaps(gaps) && !declined;
+      if (stillMissing && !extracted.declinedProfile && extracted.kind === "provide_profile") {
+        const text = missingProfilePrompt({ ...gaps, question: pending.question });
+        await writePending(session.id, context.userId, { ...pending, askedProfile: true });
+        await insertMessage(session.id, context.userId, "assistant", text, "system");
+        return { type: "reply" as const, session: await loadPacked(session.id, context.userId) };
+      }
+      const packed = await fillChart({
+        userId: context.userId,
+        sessionId: session.id,
+        mode: (pending.mode as SessionMode) || nextMode,
+        eventId: (pending.eventId as EventId) || nextEvent,
+        loc,
+        profile,
+        civil: pending.civil ?? extracted.civil ?? undefined,
+        lotsCode: pending.lotsCode ?? extracted.lotsCode,
+        fortuneSpan: pending.fortuneSpan ?? extracted.fortuneSpan,
+        question: pending.question || question,
+      });
+      return { type: "reply" as const, session: packed };
+    }
+
+    const readyQuestion =
+      extracted.hasQuestion ||
+      extracted.kind === "ask_question" ||
+      extracted.kind === "fortune" ||
+      extracted.kind === "new_lots" ||
+      Boolean(extracted.lotsCode);
+
+    if (!hasChart) {
+      if (extracted.kind === "chitchat" && !readyQuestion && !extracted.gender && !extracted.birthYear && !extracted.location) {
+        await insertMessage(session.id, context.userId, "assistant", chitchatFallback(), "chat");
+        return { type: "reply" as const, session: await loadPacked(session.id, context.userId) };
+      }
+      if (readyQuestion && hasGaps(gaps) && !declined && !pending?.askedProfile) {
+        await writePending(session.id, context.userId, {
+          kind: "need_profile",
+          askedProfile: true,
+          mode: nextMode,
+          eventId: nextEvent,
+          civil: extracted.civil ?? undefined,
+          question,
+          lotsCode: extracted.lotsCode ?? undefined,
+          fortuneSpan: extracted.fortuneSpan ?? undefined,
+        });
+        const text = missingProfilePrompt({ ...gaps, question });
+        await insertMessage(session.id, context.userId, "assistant", text, "system");
+        return { type: "reply" as const, session: await loadPacked(session.id, context.userId) };
+      }
+      if (!readyQuestion && (extracted.gender || extracted.birthYear || extracted.location || extracted.kind === "provide_profile")) {
+        const left = gapsOf(profile, loc);
+        const text = hasGaps(left)
+          ? missingProfilePrompt(left)
+          : "资料我记下了。想问哪件事，直接说就好。";
+        await insertMessage(session.id, context.userId, "assistant", text, "system");
+        return { type: "reply" as const, session: await loadPacked(session.id, context.userId) };
+      }
+      if (!readyQuestion) {
+        await insertMessage(session.id, context.userId, "assistant", chitchatFallback(), "chat");
+        return { type: "reply" as const, session: await loadPacked(session.id, context.userId) };
+      }
+      const packed = await fillChart({
+        userId: context.userId,
+        sessionId: session.id,
+        mode: nextMode,
+        eventId: nextEvent,
+        loc,
+        profile,
+        civil: extracted.civil ?? undefined,
+        lotsCode: extracted.lotsCode,
+        fortuneSpan: extracted.fortuneSpan,
+        question,
+      });
+      return { type: "reply" as const, session: packed };
+    }
+
+    const timeShift = shouldOpenNewTimeChart(session.mode as SessionMode, chartCivil, extracted.civil);
     const lotsShift = shouldOpenNewLotsChart(session.mode as SessionMode, session.event_id as EventId, nextEvent);
 
-    if (timeShift && intent.civil) {
-      const pendingBody = {
-        mode: session.mode,
+    if (timeShift && extracted.civil) {
+      await writePending(session.id, context.userId, {
+        kind: "new_chart",
+        mode: session.mode as SessionMode,
         eventId: nextEvent,
-        civil: intent.civil,
-        question: intent.question,
-      };
-      await sql`update divination_sessions set pending_json = ${JSON.stringify(pendingBody)} where id = ${session.id} and user_id = ${context.userId}`;
-      const text = `你问到的时间 ${formatBeijing(intent.civil)} 已经超出当前奇门盘（${shichenRangeLabel(chartCivil.hour)}）的范围。是否按新的时间重新起一盘？回复「是」即另开；回复「否」则继续本盘。`;
-      const msg = await insertMessage(session.id, context.userId, "assistant", text, "confirm");
-      return {
-        type: "confirm" as const,
-        message: { id: msg.id, role: "assistant" as const, content: msg.content, kind: msg.kind },
-      };
+        civil: extracted.civil,
+        question,
+      });
+      const text = `你提到的时间已经过了这一盘的时辰（${shichenRangeLabel(chartCivil.hour)}）。要不要按新时间再起一盘？说「好」就行，不想换就继续问这一盘。`;
+      await insertMessage(session.id, context.userId, "assistant", text, "confirm");
+      return { type: "confirm" as const, session: await loadPacked(session.id, context.userId) };
     }
 
     if (lotsShift) {
-      const pendingBody = {
+      await writePending(session.id, context.userId, {
+        kind: "new_chart",
         mode: "lots",
         eventId: nextEvent,
-        lotsCode: session.lots_code,
-        question: intent.question,
-      };
-      await sql`update divination_sessions set pending_json = ${JSON.stringify(pendingBody)} where id = ${session.id} and user_id = ${context.userId}`;
-      const text = `摇卦这一盘目前在问「${EVENT_NAME[(session.event_id as EventId) || "wealth"]}」。你这次问的是「${EVENT_NAME[nextEvent]}」，不属同一类事情。是否另开一局新盘？回复「是」即另开。`;
-      const msg = await insertMessage(session.id, context.userId, "assistant", text, "confirm");
-      return {
-        type: "confirm" as const,
-        message: { id: msg.id, role: "assistant" as const, content: msg.content, kind: msg.kind },
-      };
+        lotsCode: session.lots_code ?? undefined,
+        question,
+      });
+      const text = `这一盘本来在看「${EVENT_NAME[(session.event_id as EventId) || "wealth"]}」，你这次问的是「${EVENT_NAME[nextEvent]}」。要不要另开一局？说「好」我就重起。`;
+      await insertMessage(session.id, context.userId, "assistant", text, "confirm");
+      return { type: "confirm" as const, session: await loadPacked(session.id, context.userId) };
     }
 
     const historyRows = await sql<MsgRow>`
@@ -495,37 +699,27 @@ export const sendConsult = createServerFn({ method: "POST" })
     const history = historyRows
       .reverse()
       .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
-
-    const body = bodyFrom({
-      profile,
-      loc,
-      civil: chartCivil.year ? chartCivil : undefined,
-      eventId: nextEvent,
-      casting: session.mode === "lots" ? "lots" : "chaibu",
-      lotsCode: session.lots_code,
-      lotsMonth: chartCivil.month || undefined,
-      question: intent.question,
-      history,
-    });
-
+    const scan = JSON.parse(session.scan_json || "{}") as Record<string, unknown>;
     try {
-      const asked = await runAsk(body);
-      const askedText = String(asObj(asked).text ?? "");
-      const msg = await insertMessage(session.id, context.userId, "assistant", askedText, "ask");
+      const text = await sisterSay({
+        question,
+        clues: cluesFromScan(scan),
+        juLabel: session.ju_label ?? undefined,
+        hourName: session.hour_name ?? undefined,
+        eventName: EVENT_NAME[nextEvent],
+        allowPlace: isPreciseLocation(loc),
+        place: isPreciseLocation(loc) ? loc.city : undefined,
+        followup: true,
+        history,
+      });
+      await insertMessage(session.id, context.userId, "assistant", text, "ask");
       if (nextEvent && nextEvent !== session.event_id) {
         await sql`update divination_sessions set event_id = ${nextEvent} where id = ${session.id} and user_id = ${context.userId}`;
       }
-      return {
-        type: "reply" as const,
-        message: { id: msg.id, role: "assistant" as const, content: msg.content, kind: msg.kind },
-        eventId: nextEvent,
-      };
+      return { type: "reply" as const, session: await loadPacked(session.id, context.userId), eventId: nextEvent };
     } catch (err) {
-      const text = err instanceof Error ? err.message : "这一问没有答上来，请换个说法再试。";
-      const msg = await insertMessage(session.id, context.userId, "assistant", text, "error");
-      return {
-        type: "reply" as const,
-        message: { id: msg.id, role: "assistant" as const, content: msg.content, kind: msg.kind },
-      };
+      const text = err instanceof Error ? err.message : "这一问问得有点含糊，你换个说法再试试。";
+      await insertMessage(session.id, context.userId, "assistant", text, "error");
+      return { type: "reply" as const, session: await loadPacked(session.id, context.userId) };
     }
   });

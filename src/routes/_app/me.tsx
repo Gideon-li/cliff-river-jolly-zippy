@@ -8,7 +8,6 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { getMyProfile, updateMyProfile } from "@/lib/fn/profile";
-import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_app/me")({ component: MePage });
 
@@ -70,21 +69,16 @@ function MePage() {
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1.5">
             <Label>性别</Label>
-            <div className="flex gap-2">
-              {(["male", "female"] as const).map((g) => (
-                <button
-                  key={g}
-                  type="button"
-                  onClick={() => setGender(g)}
-                  className={cn(
-                    "h-11 flex-1 rounded-[var(--radius-sm)] border text-sm",
-                    gender === g ? "border-cinnabar bg-seal text-cinnabar" : "border-line text-muted",
-                  )}
-                >
-                  {g === "male" ? "男" : "女"}
-                </button>
-              ))}
-            </div>
+            <Input
+              placeholder="男 或 女，可不填"
+              value={gender === "male" ? "男" : gender === "female" ? "女" : gender}
+              onChange={(e) => {
+                const v = e.target.value.trim();
+                if (v.startsWith("女")) setGender("female");
+                else if (v.startsWith("男")) setGender("male");
+                else setGender("");
+              }}
+            />
           </div>
           <div className="space-y-1.5">
             <Label>出生年</Label>

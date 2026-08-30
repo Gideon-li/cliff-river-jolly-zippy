@@ -9,6 +9,7 @@ import { formatBeijing } from "@/lib/utils";
 export const Route = createFileRoute("/_app/history")({ component: HistoryPage });
 
 const MODE_LABEL: Record<string, string> = {
+  inbox: "问事",
   now: "此刻",
   timed: "择时",
   fortune: "运势",
@@ -34,7 +35,7 @@ function HistoryPage() {
           <Skeleton className="h-20 w-full" />
         </div>
       ) : rows.length === 0 ? (
-        <p className="pt-16 text-center text-sm text-muted">还没有起过盘</p>
+        <p className="pt-16 text-center text-sm text-muted">还没有问过事</p>
       ) : (
         <ul className="space-y-2">
           {rows.map((s) => (

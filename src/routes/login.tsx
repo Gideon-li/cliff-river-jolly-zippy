@@ -90,7 +90,7 @@ function Login() {
       <div className="rise-in mt-8">
         <p className="text-[10px] tracking-[0.48em] text-faint">WECHAT MINI PROGRAM</p>
         <h1 className="mt-3 font-display text-4xl text-ink">问象</h1>
-        <p className="mt-2 text-sm text-muted">以时起盘，智断联想。授权后即可问事。</p>
+        <p className="mt-2 text-sm text-muted">想问什么，直接说。授权后即可问事。</p>
       </div>
 
       <div className="rise-in mt-10 rounded-[var(--radius-xl)] border border-line bg-paper-2 p-5">

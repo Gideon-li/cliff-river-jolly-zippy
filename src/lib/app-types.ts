@@ -14,7 +14,7 @@ export type EventId =
   | "negotiate"
   | "find";
 
-export type SessionMode = "now" | "timed" | "fortune" | "lots";
+export type SessionMode = "inbox" | "now" | "timed" | "fortune" | "lots";
 
 export type FortuneSpan = "day" | "month" | "year";
 

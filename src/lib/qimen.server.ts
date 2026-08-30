@@ -117,7 +117,24 @@ export function slimScan(raw: Record<string, unknown>) {
     events,
     focus: slimEvent(raw.focus as Record<string, unknown>),
     people: raw.people,
-    directions: raw.directions,
+    directions: raw.directions
+      ? {
+          overall: Array.isArray((raw.directions as { overall?: unknown }).overall)
+            ? ((raw.directions as { overall: Record<string, unknown>[] }).overall as Record<
+                string,
+                unknown
+              >[])
+                .slice(0, 3)
+                .map((d) => ({
+                  direction: d.direction,
+                  bagua: d.bagua,
+                  gate: d.gate,
+                  star: d.star,
+                  level: d.level,
+                }))
+            : [],
+        }
+      : null,
     fortune: fortune
       ? {
           year: slimPeriod(fortune.year),
