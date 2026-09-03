@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EVENT_NAME, type EventId } from "@/lib/app-types";
-import { adminRecentPayments, adminRecentSessions, adminUpdateUser, getAdminOverview, listAdminUsers } from "@/lib/fn/admin";
+import { adminFulfillPayment, adminRecentPayments, adminRecentSessions, adminUpdateUser, getAdminOverview, listAdminUsers } from "@/lib/fn/admin";
 import { bootstrapAuth } from "@/lib/fn/profile";
 
 export const Route = createFileRoute("/admin")({ component: AdminPage });
@@ -146,7 +146,7 @@ function AdminDesk() {
           <Stat label="今日起盘" value={overview.today} />
           <Stat label="充值到账" value={overview.revenueYuan} suffix="元" />
           <Stat label="付费笔数" value={overview.paidCount} />
-          <Stat label="月租用户" value={overview.monthly} />
+          <Stat label="订阅用户" value={overview.monthly} />
           <Stat label="永久免费" value={overview.lifetime} />
           <Stat label="问答" value={overview.messages} />
         </div>
@@ -219,9 +219,13 @@ function AdminDesk() {
                   <td className="px-4 py-2 text-xs text-muted">
                     {u.lifetime_free || u.plan === "lifetime"
                       ? "永久免费"
-                      : u.plan === "monthly"
-                        ? `月租${u.plan_until ? `至 ${new Date(u.plan_until).toISOString().slice(0, 10)}` : ""}`
-                        : `按次 ${u.credits ?? 0}`}
+                      : u.plan === "yearly"
+                        ? `年租${u.plan_until ? `至 ${new Date(u.plan_until).toISOString().slice(0, 10)}` : ""}`
+                        : u.plan === "quarterly"
+                          ? `季租${u.plan_until ? `至 ${new Date(u.plan_until).toISOString().slice(0, 10)}` : ""}`
+                          : u.plan === "monthly"
+                            ? `月租${u.plan_until ? `至 ${new Date(u.plan_until).toISOString().slice(0, 10)}` : ""}`
+                            : `按次 ${u.credits ?? 0}`}
                   </td>
                   <td className="px-4 py-2 tabular-nums">{u.sessions}</td>
                   <td className="px-4 py-2">
@@ -243,6 +247,24 @@ function AdminDesk() {
                         }
                       >
                         月租
+                      </button>
+                      <button
+                        type="button"
+                        className="text-xs text-cinnabar"
+                        onClick={() =>
+                          void adminUpdateUser({ data: { userId: u.id, plan: "quarterly" } }).then(() => reload())
+                        }
+                      >
+                        季租
+                      </button>
+                      <button
+                        type="button"
+                        className="text-xs text-cinnabar"
+                        onClick={() =>
+                          void adminUpdateUser({ data: { userId: u.id, plan: "yearly" } }).then(() => reload())
+                        }
+                      >
+                        年租
                       </button>
                       <button
                         type="button"
@@ -278,9 +300,20 @@ function AdminDesk() {
               <li key={p.id} className="flex justify-between gap-3 border-b border-line pb-2">
                 <span>
                   {p.nickname || p.email} · {p.channel === "wechat" ? "微信" : p.channel === "alipay" ? "支付宝" : "管理员"} ·{" "}
-                  {(p.amount_fen / 100).toFixed(0)} 元 · {p.status === "paid" ? "已到账" : "待支付"}
+                  {(p.amount_fen / 100).toFixed(0)} 元
+                  {p.remark ? ` · ${p.remark}` : ""} · {p.status === "paid" ? "已到账" : "待支付"}
                 </span>
-                <span className="shrink-0 text-xs text-faint">{dayTime(p.created_at)}</span>
+                {p.status === "pending" ? (
+                  <button
+                    type="button"
+                    className="shrink-0 text-xs text-cinnabar"
+                    onClick={() => void adminFulfillPayment({ data: { id: p.id } }).then(() => reload())}
+                  >
+                    确认到账
+                  </button>
+                ) : (
+                  <span className="shrink-0 text-xs text-faint">{dayTime(p.created_at)}</span>
+                )}
               </li>
             ))}
           </ul>

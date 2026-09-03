@@ -121,11 +121,18 @@ export const ADMIN_EMAIL = "18858839671@fortune.fun";
 export const ADMIN_PHONE = "18858839671";
 export const ADMIN_PASSWORD = "destiny1986";
 
-export type PlanKind = "payg" | "monthly" | "lifetime";
+export type PlanKind = "payg" | "monthly" | "quarterly" | "yearly" | "lifetime";
 
 export type PayChannel = "wechat" | "alipay" | "admin";
 
-export type PaySku = "credits_1" | "credits_10" | "credits_30" | "credits_88" | "monthly";
+export type PaySku =
+  | "credits_1"
+  | "credits_10"
+  | "credits_30"
+  | "credits_88"
+  | "monthly"
+  | "quarterly"
+  | "yearly";
 
 export const PAY_SKUS: {
   id: PaySku;
@@ -134,16 +141,23 @@ export const PAY_SKUS: {
   amountYuan: number;
   credits: number;
   plan?: PlanKind;
+  days?: number;
 }[] = [
   { id: "credits_1", title: "1 次预测", hint: "1 元看一盘", amountYuan: 1, credits: 1 },
   { id: "credits_10", title: "10 次预测", hint: "每次 1 元", amountYuan: 10, credits: 10 },
   { id: "credits_30", title: "30 次预测", hint: "每次 1 元", amountYuan: 30, credits: 30 },
   { id: "credits_88", title: "88 次预测", hint: "多问更划算", amountYuan: 88, credits: 88 },
-  { id: "monthly", title: "月租畅问", hint: "30 天不限次数", amountYuan: 30, credits: 0, plan: "monthly" },
+  { id: "monthly", title: "包月畅问", hint: "30 天不限次数", amountYuan: 30, credits: 0, plan: "monthly", days: 30 },
+  { id: "quarterly", title: "包季畅问", hint: "90 天不限次数", amountYuan: 80, credits: 0, plan: "quarterly", days: 90 },
+  { id: "yearly", title: "包年畅问", hint: "365 天不限次数", amountYuan: 288, credits: 0, plan: "yearly", days: 365 },
 ];
+
+export const PAY_SKU_IDS = PAY_SKUS.map((s) => s.id) as [PaySku, ...PaySku[]];
 
 export const CAST_PRICE_YUAN = 1;
 export const MONTHLY_PRICE_YUAN = 30;
+export const QUARTERLY_PRICE_YUAN = 80;
+export const YEARLY_PRICE_YUAN = 288;
 
 export const PALACE_ORDER: number[] = [4, 9, 2, 3, 5, 7, 8, 1, 6];
 

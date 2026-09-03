@@ -4,7 +4,7 @@ import { getSql } from "@/lib/db";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { ADMIN_EMAIL } from "@/lib/app-types";
 import { ensureAdmin } from "./profile";
-import { grantPlan, readWallet } from "./billing";
+import { grantPlan, markPaidAndGrant, readWallet } from "./billing";
 
 async function requireAdmin(userId: string) {
   await ensureAdmin();
@@ -42,7 +42,8 @@ export const getAdminOverview = createServerFn({ method: "GET" })
     `;
     const monthly = await sql<{ count: number }>`
       select count(*)::int as count from profiles
-      where plan = ${"monthly"} and plan_until is not null and plan_until > now()
+      where plan in (${"monthly"}, ${"quarterly"}, ${"yearly"})
+        and plan_until is not null and plan_until > now()
     `;
     const lifetime = await sql<{ count: number }>`
       select count(*)::int as count from profiles where lifetime_free = true or plan = ${"lifetime"}
@@ -126,7 +127,7 @@ export const adminUpdateUser = createServerFn({ method: "POST" })
       nickname: z.string().trim().max(32).optional(),
       disabled: z.boolean().optional(),
       creditsDelta: z.number().int().min(-999).max(999).optional(),
-      plan: z.enum(["payg", "monthly", "lifetime"]).optional(),
+      plan: z.enum(["payg", "monthly", "quarterly", "yearly", "lifetime"]).optional(),
       lifetime: z.boolean().optional(),
     }),
   )
@@ -208,14 +209,23 @@ export const adminRecentPayments = createServerFn({ method: "GET" })
       sku: string;
       amount_fen: number;
       status: string;
+      remark: string | null;
       created_at: string;
       paid_at: string | null;
     }>`
-      select p.id, p.user_id, pr.nickname, u.email, p.channel, p.sku, p.amount_fen, p.status, p.created_at, p.paid_at
+      select p.id, p.user_id, pr.nickname, u.email, p.channel, p.sku, p.amount_fen, p.status, p.remark, p.created_at, p.paid_at
       from payments p
       left join profiles pr on pr.user_id = p.user_id
       left join "user" u on u.id = p.user_id
       order by p.created_at desc
       limit 40
     `;
+  });
+
+export const adminFulfillPayment = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator(z.object({ id: z.string().min(1) }))
+  .handler(async ({ context, data }) => {
+    await requireAdmin(context.userId);
+    return markPaidAndGrant(data.id);
   });

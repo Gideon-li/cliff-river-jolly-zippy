@@ -20,6 +20,7 @@ function MePage() {
   const [place, setPlace] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
   const [planLabel, setPlanLabel] = useState("");
+  const [wechatBound, setWechatBound] = useState(false);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -31,6 +32,7 @@ function MePage() {
       setPlace([p.province, p.city, p.district].filter(Boolean).join(" "));
       setIsAdmin(p.isAdmin);
       setPlanLabel(w?.wallet.label ?? (p.lifetimeFree ? "永久免费" : `按次 ${p.credits} 次`));
+      setWechatBound(Boolean(p.wechatOpenid));
     });
   }, []);
 
@@ -67,11 +69,18 @@ function MePage() {
         <div>
           <p className="text-xs text-muted">问事权益</p>
           <p className="mt-1 font-display text-lg">{planLabel || "按次计费"}</p>
-          <p className="mt-1 text-xs text-faint">一次预测 1 元，月租 30 元</p>
+          <p className="mt-1 text-xs text-faint">一次 1 元；包月 30 / 包季 80 / 包年 288</p>
         </div>
         <Link to="/wallet">
           <Button size="sm">去充值</Button>
         </Link>
+      </Card>
+
+      <Card className="mt-4 flex items-center justify-between">
+        <div>
+          <p className="text-xs text-muted">微信</p>
+          <p className="mt-1 text-sm">{wechatBound ? "已绑定，可用微信登录" : "未绑定。登录页可打开微信授权。"}</p>
+        </div>
       </Card>
 
       <Card className="mt-4 space-y-3">

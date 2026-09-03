@@ -198,7 +198,7 @@ export function ChartWorkspace({
                   </Section>
                 ))}
                 {view.weather ? (
-                  <Section title={view.weather.headline || "天象">
+                  <Section title={view.weather.headline || "天象"}>
                     {view.weather.sky ? <p className="text-sm text-ink-soft">{view.weather.sky}</p> : null}
                     {view.weather.advice ? <p className="text-sm text-muted">{view.weather.advice}</p> : null}
                   </Section>

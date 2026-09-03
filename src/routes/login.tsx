@@ -2,11 +2,12 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { GROK_PROVIDERS, authClient, authEnabled, signIn } from "@/lib/auth/client";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
-import { bootstrapAuth } from "@/lib/fn/profile";
+import { bootstrapAuth, updateMyProfile } from "@/lib/fn/profile";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { EntertainmentNotice } from "@/components/app-shell";
+import { copyText, isWeChatUA, launchSystemWeChat, wechatLoginUrl } from "@/lib/wechat";
 
 export const Route = createFileRoute("/login")({ component: Login });
 
@@ -27,14 +28,31 @@ function Login() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [waitingWeChat, setWaitingWeChat] = useState(false);
+  const [ready, setReady] = useState(false);
+  const [inWeChat, setInWeChat] = useState(false);
+  const [loginUrl, setLoginUrl] = useState("");
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
+    setInWeChat(isWeChatUA());
+    setLoginUrl(wechatLoginUrl());
+    setReady(true);
     void bootstrapAuth().catch(() => undefined);
   }, []);
 
   useEffect(() => {
     if (!isPending && user) navigate({ to: "/" });
   }, [isPending, user, navigate]);
+
+  useEffect(() => {
+    if (!ready || typeof window === "undefined") return;
+    const fromWeChat = new URLSearchParams(window.location.search).get("from") === "wechat";
+    if (fromWeChat && isWeChatUA() && !user && !isPending) {
+      void wechatEnter();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, isPending, user]);
 
   async function wechatEnter() {
     setBusy(true);
@@ -53,12 +71,26 @@ function Login() {
         const created = await authClient.signUp.email({ email, password: pwd, name });
         if (created.error) throw new Error(created.error.message ?? "授权失败");
       }
+      await updateMyProfile({ data: { nickname: name, wechatOpenid: openid } }).catch(() => undefined);
       window.location.href = "/";
     } catch (e) {
       setError(e instanceof Error ? e.message : "授权失败");
     } finally {
       setBusy(false);
     }
+  }
+
+  function openSystemWeChat() {
+    setWaitingWeChat(true);
+    setError("");
+    launchSystemWeChat(loginUrl || wechatLoginUrl());
+  }
+
+  async function copyLoginLink() {
+    const url = loginUrl || wechatLoginUrl();
+    const ok = await copyText(url);
+    setCopied(ok);
+    if (ok) window.setTimeout(() => setCopied(false), 1600);
   }
 
   async function accountEnter(kind: "in" | "up") {
@@ -89,33 +121,54 @@ function Login() {
   return (
     <div className="mx-auto flex min-h-dvh max-w-[430px] flex-col bg-paper px-6 py-10">
       <div className="rise-in mt-8">
-        <p className="text-[10px] tracking-[0.48em] text-faint">WECHAT MINI PROGRAM</p>
+        <p className="text-[10px] tracking-[0.48em] text-faint">问象 · 奇门智断</p>
         <h1 className="mt-3 font-display text-4xl text-ink">问象</h1>
         <EntertainmentNotice className="mt-3" />
-        <p className="mt-2 text-sm text-muted">想问什么，直接说。授权后即可问事。</p>
+        <p className="mt-2 text-sm text-muted">有微信就用微信进。授权后即可问事。</p>
       </div>
 
       <div className="rise-in mt-10 rounded-[var(--radius-xl)] border border-line bg-paper-2 p-5">
         {mode === "wechat" ? (
           <div className="space-y-4">
-            <p className="text-sm text-ink-soft">申请使用你的昵称创建问事账号。网页体验对应微信授权登录。</p>
-            <div className="space-y-1.5">
-              <Label htmlFor="nick">微信昵称</Label>
-              <Input
-                id="nick"
-                value={nickname}
-                onChange={(e) => setNickname(e.target.value)}
-                placeholder="不填则用「问事人」"
-              />
-            </div>
-            <Button className="w-full" variant="wechat" disabled={busy || !authEnabled} onClick={() => void wechatEnter()}>
-              {busy ? "授权中…" : "微信授权登录"}
-            </Button>
-            <button
-              type="button"
-              className="w-full text-center text-xs text-muted"
-              onClick={() => setMode("account")}
-            >
+            {ready && inWeChat ? (
+              <>
+                <p className="text-sm text-ink-soft">已在微信中打开。点下面即可用微信资料进入问象。</p>
+                <Button className="w-full" variant="wechat" disabled={busy || !authEnabled} onClick={() => void wechatEnter()}>
+                  {busy ? "授权中…" : "微信一键登录"}
+                </Button>
+              </>
+            ) : (
+              <>
+                <p className="text-sm text-ink-soft">将唤起手机里的微信。也可扫码，在微信里打开本页后再授权。</p>
+                <div className="mx-auto w-fit rounded-[var(--radius-lg)] border border-line bg-paper p-3">
+                  {ready && loginUrl ? (
+                    <img
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&margin=8&data=${encodeURIComponent(loginUrl)}`}
+                      alt="用微信扫码打开问象"
+                      width={200}
+                      height={200}
+                      className="size-[200px]"
+                    />
+                  ) : (
+                    <div className="size-[200px] bg-seal/50" />
+                  )}
+                </div>
+                <Button className="w-full" variant="wechat" disabled={busy || !authEnabled} onClick={openSystemWeChat}>
+                  {waitingWeChat ? "正在打开微信…" : "打开微信登录"}
+                </Button>
+                {waitingWeChat ? (
+                  <Button className="w-full" variant="outline" disabled={busy} onClick={() => void wechatEnter()}>
+                    {busy ? "授权中…" : "已打开微信，继续登录"}
+                  </Button>
+                ) : null}
+                {ready ? (
+                  <button type="button" className="w-full text-center text-xs text-muted" onClick={() => void copyLoginLink()}>
+                    {copied ? "链接已复制，到微信里打开" : "复制链接到微信打开"}
+                  </button>
+                ) : null}
+              </>
+            )}
+            <button type="button" className="w-full text-center text-xs text-muted" onClick={() => setMode("account")}>
               使用手机号 / 邮箱
             </button>
           </div>
@@ -140,7 +193,7 @@ function Login() {
               创建账号
             </Button>
             <button type="button" className="w-full text-center text-xs text-muted" onClick={() => setMode("wechat")}>
-              返回微信授权
+              返回微信登录
             </button>
           </div>
         )}

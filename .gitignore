@@ -11,3 +11,8 @@ src/routeTree.gen.ts
 .DS_Store
 artifacts
 .project_id
+.github_repo
+.env
+.env.*
+attachments
+.tanstack

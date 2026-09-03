@@ -27,7 +27,11 @@ type ProfileRow = {
 
 function toProfile(row: ProfileRow, fallbackName = ""): Profile {
   const lifetime = Boolean(row.lifetime_free) || row.plan === "lifetime";
-  const plan = (lifetime ? "lifetime" : row.plan === "monthly" ? "monthly" : "payg") as PlanKind;
+  const plan = (lifetime
+    ? "lifetime"
+    : row.plan === "monthly" || row.plan === "quarterly" || row.plan === "yearly"
+      ? row.plan
+      : "payg") as PlanKind;
   return {
     userId: row.user_id,
     nickname: row.nickname || fallbackName,
@@ -113,6 +117,7 @@ export const updateMyProfile = createServerFn({ method: "POST" })
       province: z.string().trim().max(32).nullable().optional(),
       city: z.string().trim().max(32).nullable().optional(),
       district: z.string().trim().max(32).nullable().optional(),
+      wechatOpenid: z.string().trim().max(64).optional(),
     }),
   )
   .handler(async ({ context, data }) => {
@@ -131,6 +136,7 @@ export const updateMyProfile = createServerFn({ method: "POST" })
     const province = data.province !== undefined ? data.province : row.province;
     const city = data.city !== undefined ? data.city : row.city;
     const district = data.district !== undefined ? data.district : row.district;
+    const wechatOpenid = data.wechatOpenid ?? row.wechat_openid;
     await sql`
       update profiles set
         nickname = ${nickname},
@@ -139,6 +145,7 @@ export const updateMyProfile = createServerFn({ method: "POST" })
         province = ${province},
         city = ${city},
         district = ${district},
+        wechat_openid = ${wechatOpenid},
         updated_at = now()
       where user_id = ${context.userId}
     `;
