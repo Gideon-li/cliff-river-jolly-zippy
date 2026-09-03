@@ -96,6 +96,20 @@ export const MODE_LABEL: Record<Exclude<SessionMode, "inbox">, string> = {
   lots: "摇卦求签（报一个三位数）",
 };
 
+export const MODE_SHORT: Record<SessionMode, string> = {
+  inbox: "问事",
+  now: "此刻",
+  timed: "择时",
+  fortune: "运势",
+  lots: "摇卦",
+};
+
+export const FORTUNE_SPAN_LABEL: Record<FortuneSpan, string> = {
+  day: "日运",
+  month: "月运",
+  year: "年运",
+};
+
 export const BEIJING_LOCATION: GeoLocation = {
   province: "北京市",
   city: "北京市",
@@ -132,3 +146,24 @@ export const CAST_PRICE_YUAN = 1;
 export const MONTHLY_PRICE_YUAN = 30;
 
 export const PALACE_ORDER: number[] = [4, 9, 2, 3, 5, 7, 8, 1, 6];
+
+export const PALACE_META: Record<number, { bagua: string; direction: string; hint: string }> = {
+  1: { bagua: "坎", direction: "北", hint: "水边、低处" },
+  2: { bagua: "坤", direction: "西南", hint: "田野、宅地" },
+  3: { bagua: "震", direction: "东", hint: "大道、闹市" },
+  4: { bagua: "巽", direction: "东南", hint: "园林、学堂" },
+  5: { bagua: "中", direction: "中", hint: "室内、枢纽" },
+  6: { bagua: "乾", direction: "西北", hint: "高楼、楼顶" },
+  7: { bagua: "兑", direction: "西", hint: "湖泽、西厢" },
+  8: { bagua: "艮", direction: "东北", hint: "门口、山地" },
+  9: { bagua: "离", direction: "南", hint: "厅堂、窗口" },
+};
+
+export type ManualCastInput = {
+  mode: "now" | "timed" | "fortune" | "lots";
+  eventId: EventId;
+  civil?: CivilTime;
+  lotsCode?: string;
+  fortuneSpan?: FortuneSpan;
+  question?: string;
+};
