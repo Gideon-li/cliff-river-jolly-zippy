@@ -3,8 +3,19 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
-import { sendConsult } from "@/lib/fn/divination";
+import { cn, formatBeijing } from "@/lib/utils";
+import { castManual, sendConsult } from "@/lib/fn/divination";
+import {
+  EVENT_NAME,
+  FORTUNE_SPAN_LABEL,
+  MODE_SHORT,
+  type CivilTime,
+  type EventId,
+  type FortuneSpan,
+  type GeoLocation,
+  type ManualCastInput,
+  type SessionMode,
+} from "@/lib/app-types";
 
 export type ChatMessage = {
   id: number;
@@ -16,9 +27,17 @@ export type ChatMessage = {
 
 export type ChatSession = {
   id: string;
-  juLabel: string | null;
+  mode: SessionMode;
+  fortuneSpan: FortuneSpan | string | null;
+  lotsCode: string | null;
+  eventId: EventId | null;
+  civil: CivilTime;
   hourName: string | null;
+  juLabel: string | null;
+  location: GeoLocation | Record<string, never>;
   scan: unknown;
+  pending: unknown;
+  createdAt?: string;
   messages: ChatMessage[];
 };
 
@@ -31,6 +50,32 @@ function fresher(current: ChatSession | null, incoming: ChatSession): ChatSessio
   }
   if (current.messages.length > incoming.messages.length) return current;
   return incoming;
+}
+
+function describeManualCast(input: ManualCastInput) {
+  const bits = [MODE_SHORT[input.mode]];
+  if (input.fortuneSpan) bits.push(FORTUNE_SPAN_LABEL[input.fortuneSpan]);
+  if (input.lotsCode) bits.push(`摇卦 ${input.lotsCode}`);
+  if (input.civil?.year) bits.push(formatBeijing(input.civil));
+  bits.push(`事项「${EVENT_NAME[input.eventId]}」`);
+  const head = `我在网页上起了一盘：${bits.join(" · ")}`;
+  return input.question?.trim() ? `${head}。我想问：${input.question.trim()}` : `${head}。请根据盘面主动总结。`;
+}
+
+function optimisticUser(current: ChatSession, text: string): ChatSession {
+  return {
+    ...current,
+    messages: [
+      ...current.messages,
+      {
+        id: Date.now(),
+        role: "user",
+        content: text,
+        kind: "user",
+        createdAt: new Date().toISOString(),
+      },
+    ],
+  };
 }
 
 export function useConsultChat(key: string, loader: () => Promise<ChatSession>) {
@@ -75,19 +120,7 @@ export function useConsultChat(key: string, loader: () => Promise<ChatSession>) 
     if (!current || busy) return;
     setError("");
     setBusy(true);
-    const optimistic: ChatSession = {
-      ...current,
-      messages: [
-        ...current.messages,
-        {
-          id: Date.now(),
-          role: "user",
-          content: text,
-          kind: "user",
-          createdAt: new Date().toISOString(),
-        },
-      ],
-    };
+    const optimistic = optimisticUser(current, text);
     sessionRef.current = optimistic;
     threadHold.set(key, optimistic);
     threadHold.set(current.id, optimistic);
@@ -102,7 +135,37 @@ export function useConsultChat(key: string, loader: () => Promise<ChatSession>) 
     }
   }
 
-  return { session, busy, error, send };
+  async function recast(input: ManualCastInput) {
+    const current = sessionRef.current;
+    if (!current || busy) return;
+    setError("");
+    setBusy(true);
+    const optimistic = optimisticUser(current, describeManualCast(input));
+    sessionRef.current = optimistic;
+    threadHold.set(key, optimistic);
+    threadHold.set(current.id, optimistic);
+    setSession(optimistic);
+    try {
+      const r = await castManual({
+        data: {
+          sessionId: current.id,
+          mode: input.mode,
+          eventId: input.eventId,
+          civil: input.civil,
+          lotsCode: input.lotsCode,
+          fortuneSpan: input.fortuneSpan,
+          question: input.question,
+        },
+      });
+      if (r.session) adopt(r.session as ChatSession);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "起盘失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return { session, busy, error, send, recast };
 }
 
 export function ConsultChat({
@@ -110,11 +173,13 @@ export function ConsultChat({
   busy,
   error,
   onSend,
+  hideMeta,
 }: {
   session: ChatSession;
   busy: boolean;
   error?: string;
   onSend: (text: string) => void;
+  hideMeta?: boolean;
 }) {
   const [text, setText] = useState("");
   const scroller = useRef<HTMLDivElement>(null);
@@ -127,21 +192,21 @@ export function ConsultChat({
   }, [session.messages.length, lastId, busy]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      {session.juLabel ? (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {!hideMeta && session.juLabel ? (
         <p className="mb-2 shrink-0 text-xs text-faint">
           {session.juLabel}
           {session.hourName ? ` · ${session.hourName.replace(/时$/, "")}时` : ""}
         </p>
       ) : null}
 
-      <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        <div className="space-y-3 pb-3">
+      <div ref={scroller} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain px-3">
+        <div className="space-y-3 py-3">
           {session.messages.map((m, i) => (
             <div
               key={`${m.id}-${m.kind}-${i}`}
               className={cn(
-                "max-w-[92%] rounded-[var(--radius-lg)] px-3.5 py-2.5 text-sm leading-6 whitespace-pre-wrap",
+                "max-w-[92%] rounded-[var(--radius-lg)] px-3.5 py-2.5 text-sm leading-6 break-words whitespace-pre-wrap",
                 m.role === "user"
                   ? "ml-auto bg-cinnabar text-paper"
                   : "border border-line bg-paper-2 text-ink",
@@ -160,7 +225,7 @@ export function ConsultChat({
       </div>
 
       <form
-        className="shrink-0 border-t border-line bg-paper pt-2 pb-2"
+        className="shrink-0 border-t border-line bg-paper px-3 pt-2 pb-2"
         onSubmit={(e) => {
           e.preventDefault();
           const q = text.trim();
@@ -182,7 +247,7 @@ export function ConsultChat({
         </div>
         <p className="pt-1 text-center text-[10px] tracking-[0.18em] text-faint">玄学预测，仅供娱乐</p>
       </form>
-      {error ? <p className="mt-1 shrink-0 text-xs text-cinnabar">{error}</p> : null}
+      {error ? <p className="mt-1 shrink-0 px-3 text-xs text-cinnabar">{error}</p> : null}
     </div>
   );
 }
