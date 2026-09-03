@@ -5,7 +5,7 @@ import { z } from "zod";
 import { hashPassword } from "better-auth/crypto";
 import { getSql } from "@/lib/db";
 import { SESSION_TOKEN_COOKIE } from "@/lib/auth/server";
-import { sendLoginCodeEmail, smtpStatus } from "@/lib/mail.server";
+import { sendLoginCodeEmail, smtpReady } from "@/lib/mail.server";
 import { sendLoginCodeSms, smsReady } from "@/lib/sms.server";
 import { newId } from "@/lib/utils";
 
@@ -25,7 +25,7 @@ function toEmail(channel: "email" | "phone", target: string) {
 }
 
 export const loginChannels = createServerFn({ method: "GET" }).handler(async () => {
-  const mail = smtpStatus();
+  const mail = await smtpReady();
   return { email: mail.ok, sms: smsReady() };
 });
 
@@ -39,7 +39,7 @@ export const sendVerifyCode = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const target = data.target.trim().toLowerCase();
     if (data.channel === "email" && !EMAIL_RE.test(target)) throw new Error("请填写有效邮箱");
-    if (data.channel === "phone" && !PHONE_RE.test(target)) throw new Error("请填写 11 位手机号");
+    if (data.channel === "phone") throw new Error("短信已暂停，请用密码注册，或用微信进入");
     const sql = await getSql();
     const key = ident(data.channel, target);
     const recent = await sql<{ created: string }>`

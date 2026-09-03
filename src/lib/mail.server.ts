@@ -3,7 +3,7 @@ import { connect } from "node:tls";
 const SMTP_HOST = "smtp.qq.com";
 const SMTP_PORT = 465;
 const SMTP_USER = "divination558@foxmail.com";
-const SMTP_PASS = "destiny1986";
+const SMTP_PASS = "pfvwsbznxxijeadg";
 const SMTP_FROM = "问象 <divination558@foxmail.com>";
 
 type Probe = { ok: boolean; reason: string; at: number };
@@ -73,7 +73,7 @@ async function smtpSession(sendMail?: { to: string; subject: string; text: strin
     socket.on("error", (err) => fail(err instanceof Error ? err : new Error(String(err))));
     socket.on("timeout", () => fail(new Error("发信超时")));
     socket.on("close", () => {
-      if (!settled) fail(new Error("QQ 邮箱拒绝登录，需要 16 位 SMTP 授权码"));
+      if (!settled) fail(new Error("QQ 邮箱拒绝登录"));
     });
     socket.on("data", (chunk: string) => {
       buf += chunk;
@@ -84,9 +84,7 @@ async function smtpSession(sendMail?: { to: string; subject: string; text: strin
       if (step === 0) {
         if (code !== 220) return fail(new Error("邮箱服务不可用"));
       } else if (code >= 400) {
-        return fail(
-          step < 5 ? new Error("QQ 邮箱拒绝登录，需要 16 位 SMTP 授权码") : new Error("验证码没有发出"),
-        );
+        return fail(step < 5 ? new Error("QQ 邮箱拒绝登录") : new Error("验证码没有发出"));
       }
       if (step >= lines.length) return done();
       const next = lines[step]!;

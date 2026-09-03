@@ -117,6 +117,7 @@ function Login() {
     setError("");
     setCode("");
     setPassword("");
+    setAccount("");
   }
 
   async function passwordEnter(kind: "in" | "up") {
