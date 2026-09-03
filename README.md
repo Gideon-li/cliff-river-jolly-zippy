@@ -2,7 +2,7 @@
 
 微信风格的奇门遁甲智能预测。起盘、智断联想、追问盘面，以及管理员后台。
 
-排盘、十二类事项与区县天气模型来自 [wechat-Qimen-Divination-Service](https://github.com/Gideon-li/wechat-Qimen-Divination-Service)（本地 vendored 于 `vendor/qimen`）。事项与天气共用该区县一套权重；天气含奇门细述（天空、雨风雷雾、宜忌）。智断调用 qwen3.8-flash。
+排盘、十二类事项与区县天气模型来自 [wechat-Qimen-Divination-Service](https://github.com/Gideon-li/wechat-Qimen-Divination-Service)（本地 vendored 于 `vendor/qimen`，当前同步 `63695eb`）。事项与天气共用该区县一套权重，并走四柱×地盘（年看尊长主考、月看亲友、日看自己、时看顺逆）。天气含奇门细述（天空、雨风雷雾、宜忌）。智断调用 qwen3.8-flash。
 
 ## 问事
 

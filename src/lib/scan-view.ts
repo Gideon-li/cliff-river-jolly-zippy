@@ -15,6 +15,11 @@ export type PalaceView = {
   hint?: string;
 };
 
+export type GanzhiView = {
+  label: string;
+  detail?: string;
+};
+
 export type FocusView = {
   name: string;
   level?: string;
@@ -25,6 +30,7 @@ export type FocusView = {
   probability?: number;
   bagua?: string;
   direction?: string;
+  ganzhi?: GanzhiView[];
 };
 
 export type DirectionView = {
@@ -61,6 +67,7 @@ export type ScanView = {
   hasChart: boolean;
   juLabel?: string;
   hourName?: string;
+  pillars?: string;
   palaces: Record<string, PalaceView>;
   focus: FocusView | null;
   directions: DirectionView[];
@@ -90,7 +97,7 @@ function cleanReading(raw: string) {
       .replace(/S 加权后[^\n。]*[。]?/g, "")
       .replace(/\s+/g, " ")
       .trim(),
-    160,
+    220,
   );
 }
 
@@ -150,6 +157,23 @@ function peopleFrom(raw: unknown): PeopleView[] {
     .slice(0, 4);
 }
 
+function pillarsLabel(raw: unknown): string | undefined {
+  const o = asRec(raw);
+  const names = ["year", "month", "day", "hour"]
+    .map((k) => str(asRec(o[k]).name))
+    .filter(Boolean);
+  return names.length === 4 ? names.join(" · ") : undefined;
+}
+
+function ganzhiFrom(raw: unknown): GanzhiView[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => asRec(item))
+    .filter((o) => o.label)
+    .slice(0, 6)
+    .map((o) => ({ label: str(o.label), detail: str(o.detail) || undefined }));
+}
+
 export function readScan(scan: unknown): ScanView {
   const root = asRec(scan);
   const chart = asRec(root.chart);
@@ -173,6 +197,7 @@ export function readScan(scan: unknown): ScanView {
     hasChart: hasPalaces || Boolean(juLabel || hourName),
     juLabel,
     hourName,
+    pillars: pillarsLabel(chart.pillars),
     palaces,
     focus: focusRaw.name
       ? {
@@ -185,6 +210,7 @@ export function readScan(scan: unknown): ScanView {
           probability: typeof focusRaw.probability === "number" ? focusRaw.probability : undefined,
           bagua: used?.bagua,
           direction: used?.direction,
+          ganzhi: ganzhiFrom(focusRaw.ganzhiFlags),
         }
       : null,
     directions: overall.slice(0, 3).map((d) => {

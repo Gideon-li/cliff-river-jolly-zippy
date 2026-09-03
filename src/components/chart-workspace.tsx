@@ -109,7 +109,7 @@ export function ChartWorkspace({
       ? FORTUNE_SPAN_LABEL[session.fortuneSpan]
       : "",
     session.eventId ? EVENT_NAME[session.eventId] : "",
-    session.civil?.year ? formatBeijing(session.civil) : "",
+    view.pillars || (session.civil?.year ? formatBeijing(session.civil) : ""),
   ].filter(Boolean);
 
   return (
@@ -171,6 +171,19 @@ export function ChartWorkspace({
                       ) : null}
                     </div>
                     {view.focus.reading ? <p className="text-sm leading-6 text-ink-soft">{view.focus.reading}</p> : null}
+                    {view.focus.ganzhi?.length ? (
+                      <ul className="flex flex-wrap gap-1.5">
+                        {view.focus.ganzhi.map((g) => (
+                          <li
+                            key={g.label}
+                            title={g.detail}
+                            className="rounded-full border border-line bg-paper px-2 py-0.5 text-[11px] text-muted"
+                          >
+                            {g.label}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
                     {view.focus.brief && view.focus.brief !== view.focus.reading ? (
                       <p className="text-sm text-muted">{view.focus.brief}</p>
                     ) : null}

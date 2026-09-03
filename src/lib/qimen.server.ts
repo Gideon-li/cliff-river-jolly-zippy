@@ -32,6 +32,24 @@ export async function getQimen(): Promise<QimenApi> {
   return cached;
 }
 
+function slimGanzhi(source: unknown) {
+  if (!Array.isArray(source)) return [];
+  return source
+    .map((item) => (item && typeof item === "object" ? (item as Record<string, unknown>) : null))
+    .filter((o): o is Record<string, unknown> => Boolean(o))
+    .filter((o) => {
+      const key = String(o.key ?? "");
+      const label = String(o.label ?? "");
+      return key.startsWith("gz-") || /[合冲刑害克]/.test(label);
+    })
+    .slice(0, 8)
+    .map((o) => ({
+      label: String(o.label ?? ""),
+      detail: String(o.detail ?? ""),
+      weight: typeof o.weight === "number" ? o.weight : 0,
+    }));
+}
+
 function slimEvent(e: Record<string, unknown> | null | undefined) {
   if (!e) return null;
   return {
@@ -48,6 +66,7 @@ function slimEvent(e: Record<string, unknown> | null | undefined) {
     associations: e.associations,
     omen: e.omen,
     classicCite: e.classicCite,
+    ganzhiFlags: slimGanzhi(e.ganzhiFlags ?? e.factors),
   };
 }
 
