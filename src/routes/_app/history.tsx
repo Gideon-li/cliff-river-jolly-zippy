@@ -2,19 +2,11 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import { Skeleton } from "@/components/ui/skeleton";
-import { EVENT_NAME, type EventId } from "@/lib/app-types";
+import { EVENT_NAME, MODE_SHORT, type EventId, type SessionMode } from "@/lib/app-types";
 import { listSessions } from "@/lib/fn/divination";
 import { formatBeijing } from "@/lib/utils";
 
 export const Route = createFileRoute("/_app/history")({ component: HistoryPage });
-
-const MODE_LABEL: Record<string, string> = {
-  inbox: "问事",
-  now: "此刻",
-  timed: "择时",
-  fortune: "运势",
-  lots: "摇卦",
-};
 
 function HistoryPage() {
   const [rows, setRows] = useState<Awaited<ReturnType<typeof listSessions>> | null>(null);
@@ -46,7 +38,7 @@ function HistoryPage() {
                 className="block rounded-[var(--radius-lg)] border border-line bg-paper-2 px-4 py-3"
               >
                 <div className="flex items-center justify-between text-xs text-muted">
-                  <span>{MODE_LABEL[s.mode] ?? s.mode}</span>
+                  <span>{MODE_SHORT[s.mode as SessionMode] ?? s.mode}</span>
                   <span>{s.civil.year ? formatBeijing(s.civil) : ""}</span>
                 </div>
                 <p className="mt-1 font-display text-ink">{s.juLabel || "奇门盘"}</p>

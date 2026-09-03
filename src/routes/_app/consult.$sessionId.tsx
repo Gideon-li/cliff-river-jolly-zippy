@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { AppShell } from "@/components/app-shell";
-import { ConsultChat, useConsultChat } from "@/components/consult-chat";
+import { ChartWorkspace } from "@/components/chart-workspace";
+import { useConsultChat } from "@/components/consult-chat";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getSession } from "@/lib/fn/divination";
 
@@ -8,7 +9,7 @@ export const Route = createFileRoute("/_app/consult/$sessionId")({ component: Co
 
 function ConsultPage() {
   const { sessionId } = Route.useParams();
-  const { session, busy, error, send } = useConsultChat(sessionId, () =>
+  const { session, busy, error, send, recast } = useConsultChat(sessionId, () =>
     getSession({ data: { id: sessionId } }),
   );
 
@@ -30,7 +31,13 @@ function ConsultPage() {
 
   return (
     <AppShell title="这一盘" fill>
-      <ConsultChat session={session} busy={busy} error={error} onSend={(t) => void send(t)} />
+      <ChartWorkspace
+        session={session}
+        busy={busy}
+        error={error}
+        onSend={(t) => void send(t)}
+        onCast={(d) => void recast(d)}
+      />
     </AppShell>
   );
 }

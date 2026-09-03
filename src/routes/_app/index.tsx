@@ -1,7 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { AppShell } from "@/components/app-shell";
-import { ConsultChat, useConsultChat } from "@/components/consult-chat";
+import { ChartWorkspace } from "@/components/chart-workspace";
+import { useConsultChat } from "@/components/consult-chat";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ensureThread } from "@/lib/fn/divination";
 import { resolvePlace, updateMyProfile } from "@/lib/fn/profile";
@@ -9,7 +10,7 @@ import { resolvePlace, updateMyProfile } from "@/lib/fn/profile";
 export const Route = createFileRoute("/_app/")({ component: Home });
 
 function Home() {
-  const { session, busy, error, send } = useConsultChat("inbox", () => ensureThread({ data: {} }));
+  const { session, busy, error, send, recast } = useConsultChat("inbox", () => ensureThread({ data: {} }));
 
   useEffect(() => {
     if (!navigator.geolocation) return;
@@ -39,7 +40,13 @@ function Home() {
         </div>
       ) : null}
       {session ? (
-        <ConsultChat session={session} busy={busy} error={error} onSend={(t) => void send(t)} />
+        <ChartWorkspace
+          session={session}
+          busy={busy}
+          error={error}
+          onSend={(t) => void send(t)}
+          onCast={(d) => void recast(d)}
+        />
       ) : error ? (
         <p className="text-sm text-cinnabar">{error}</p>
       ) : null}
