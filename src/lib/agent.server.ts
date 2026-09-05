@@ -68,6 +68,38 @@ export function clipHan(text: string, max = 500): string {
   return (m?.[1] ?? cut).trim();
 }
 
+export function formatInsightReply(
+  scene: Record<string, unknown> | null | undefined,
+  allowPlace: boolean,
+): { plain: string; original: string } {
+  const s = (k: string) => String(scene?.[k] ?? "").trim();
+  const expansion = Array.isArray(scene?.expansion)
+    ? (scene.expansion as unknown[]).map((x) => String(x ?? "").trim()).filter(Boolean)
+    : [];
+  const original = [
+    s("scene"),
+    s("time") ? `时：${s("time")}` : "",
+    s("place") ? `地：${s("place")}` : "",
+    s("people") ? `人：${s("people")}` : "",
+    s("content") ? `事：${s("content")}` : "",
+    ...expansion.map((x) => `联想：${x}`),
+    s("caution") ? `提醒：${s("caution")}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const bits = [
+    s("scene") ? `我先按盘面帮你想一件事。${s("scene")}` : "我先按盘面帮你想一件眼前可能碰上的事。",
+    s("content") ? `更具体一点：${s("content")}` : "",
+    s("people") ? `人这边：${s("people")}` : "",
+    s("time") ? `时候大概在${s("time")}` : "",
+    allowPlace && s("place") ? `地方：${s("place")}` : "",
+    expansion[0] ? `还可以想到：${expansion[0]}` : "",
+    s("caution") ? `提醒一句：${s("caution")}` : "",
+    "想接着问，直接在对话里说就行。",
+  ].filter(Boolean);
+  return { plain: clipHan(bits.join(" "), 500), original };
+}
+
 function stripNamedPlace(text: string): string {
   return text
     .replace(/北京[市]?/g, "")
@@ -103,6 +135,9 @@ export function cluesFromScan(scan: Record<string, unknown> | null | undefined):
   const direction = String(palace.direction ?? best?.direction ?? "");
   const gate = String(palace.gate ?? best?.gate ?? "");
   const star = String(palace.star ?? "");
+  const suit = Array.isArray((best as { suit?: string[] } | null)?.suit)
+    ? ((best as { suit: string[] }).suit as string[]).slice(0, 3).join("、")
+    : "";
   const weather = (scan.weather ?? {}) as {
     sketch?: {
       headline?: string;
@@ -120,7 +155,7 @@ export function cluesFromScan(scan: Record<string, unknown> | null | undefined):
     gate ? `临${gate}` : "",
     star ? star : "",
     buildingHint(bagua, direction),
-    best?.direction ? `较顺的方位偏${best.direction}` : "",
+    best?.direction ? `较顺的方位偏${best.direction}${suit ? `，宜${suit}` : ""}` : "",
     sketch.headline ? `天象「${sketch.headline}」` : "",
     wxFrom?.direction ? `${wxFrom.label ?? "雨"}从${wxFrom.direction}来` : "",
     sketch.advice ? `天气宜忌：${sketch.advice}` : "",
@@ -600,7 +635,7 @@ export async function sisterSay(input: {
 - 像面对面轻声聊，口语化，柔和，带一点鼓励。可按人物肖像调整语气，但不要把画像当众念出来。
 - 全文不超过 500 个汉字。写清判断倾向、方位或建筑提示、一句可行的建议，必要时补一点为什么。
 - 不要分点编号，不要 Markdown，不要表情符号。
-- 不要堆术语。必要时只留一两个门或星的名字。
+- 先讲人话：这件事顺不顺、该往哪边走、眼下宜忌。门星神最多点一两个名字，古辞不要整段抄，有需要就翻成白话。
 - ${placeRule}
 - 供参考，不是定论。`;
   const user = [

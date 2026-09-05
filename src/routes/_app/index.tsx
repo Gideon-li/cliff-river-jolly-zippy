@@ -10,7 +10,7 @@ import { resolvePlace, updateMyProfile } from "@/lib/fn/profile";
 export const Route = createFileRoute("/_app/")({ component: Home });
 
 function Home() {
-  const { session, busy, error, send, recast } = useConsultChat("inbox", () => ensureThread({ data: {} }));
+  const { session, busy, error, send, recast, insight } = useConsultChat("inbox", () => ensureThread({ data: {} }));
 
   useEffect(() => {
     if (!navigator.geolocation) return;
@@ -46,6 +46,7 @@ function Home() {
           error={error}
           onSend={(t) => void send(t)}
           onCast={(d) => void recast(d)}
+          onInsight={(n) => void insight(n)}
         />
       ) : error ? (
         <p className="text-sm text-cinnabar">{error}</p>

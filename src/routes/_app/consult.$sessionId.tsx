@@ -9,7 +9,7 @@ export const Route = createFileRoute("/_app/consult/$sessionId")({ component: Co
 
 function ConsultPage() {
   const { sessionId } = Route.useParams();
-  const { session, busy, error, send, recast } = useConsultChat(sessionId, () =>
+  const { session, busy, error, send, recast, insight } = useConsultChat(sessionId, () =>
     getSession({ data: { id: sessionId } }),
   );
 
@@ -37,6 +37,7 @@ function ConsultPage() {
         error={error}
         onSend={(t) => void send(t)}
         onCast={(d) => void recast(d)}
+        onInsight={(n) => void insight(n)}
       />
     </AppShell>
   );

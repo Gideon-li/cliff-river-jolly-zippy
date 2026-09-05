@@ -103,6 +103,7 @@ function slimPeriod(p: Record<string, unknown> | null | undefined) {
     reading: p.reading,
     associations: p.associations,
     omen: p.omen,
+    classicCite: p.classicCite,
     events,
     slices: p.slices,
   };
@@ -214,9 +215,34 @@ export function slimScan(raw: Record<string, unknown>) {
                   bagua: d.bagua,
                   gate: d.gate,
                   star: d.star,
+                  god: d.god,
                   level: d.level,
+                  suit: Array.isArray(d.suit) ? d.suit.slice(0, 4) : [],
+                  avoid: Array.isArray(d.avoid) ? d.avoid.slice(0, 3) : [],
+                  note: d.note,
+                  classic: d.classic,
                 }))
             : [],
+          ranked: Array.isArray((raw.directions as { ranked?: unknown }).ranked)
+            ? ((raw.directions as { ranked: Record<string, unknown>[] }).ranked as Record<
+                string,
+                unknown
+              >[])
+                .slice(0, 3)
+                .map((d) => ({
+                  direction: d.direction,
+                  bagua: d.bagua,
+                  gate: d.gate,
+                  star: d.star,
+                  god: d.god,
+                  level: d.level,
+                  suit: Array.isArray(d.suit) ? d.suit.slice(0, 4) : [],
+                  avoid: Array.isArray(d.avoid) ? d.avoid.slice(0, 3) : [],
+                  note: d.note,
+                  classic: d.classic,
+                }))
+            : [],
+
         }
       : null,
     fortune: fortune

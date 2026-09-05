@@ -3,8 +3,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { OriginalToggle } from "@/components/original-toggle";
 import { cn, formatBeijing } from "@/lib/utils";
-import { castManual, sendConsult } from "@/lib/fn/divination";
+import { splitOrigin } from "@/lib/origin";
+import { castManual, sendConsult, sendInsight } from "@/lib/fn/divination";
 import {
   EVENT_NAME,
   FORTUNE_SPAN_LABEL,
@@ -165,7 +167,28 @@ export function useConsultChat(key: string, loader: () => Promise<ChatSession>) 
     }
   }
 
-  return { session, busy, error, send, recast };
+  async function insight(note?: string) {
+    const current = sessionRef.current;
+    if (!current || busy) return;
+    setError("");
+    setBusy(true);
+    const line = note?.trim() ? `事件智断：${note.trim()}` : "请就这件事做事件智断";
+    const optimistic = optimisticUser(current, line);
+    sessionRef.current = optimistic;
+    threadHold.set(key, optimistic);
+    threadHold.set(current.id, optimistic);
+    setSession(optimistic);
+    try {
+      const r = await sendInsight({ data: { sessionId: current.id, note: note?.trim() || undefined } });
+      if (r.session) adopt(r.session as ChatSession);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "智断失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return { session, busy, error, send, recast, insight };
 }
 
 export function ConsultChat({
@@ -212,7 +235,15 @@ export function ConsultChat({
                   : "border border-line bg-paper-2 text-ink",
               )}
             >
-              {m.content}
+              {(() => {
+                const { plain, original } = splitOrigin(m.content);
+                return (
+                  <>
+                    {plain}
+                    {m.role !== "user" ? <OriginalToggle original={original} /> : null}
+                  </>
+                );
+              })()}
               {m.kind === "paywall" ? (
                 <Link to="/wallet" className="mt-2 block text-cinnabar underline-offset-4 hover:underline">
                   去充值

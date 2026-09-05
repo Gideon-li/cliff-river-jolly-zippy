@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { Columns2, LayoutGrid, MessageSquare } from "lucide-react";
+import { Columns2, LayoutGrid, MessageSquare, Sparkles } from "lucide-react";
 import { QimenBoard } from "@/components/qimen-board";
 import { ConsultChat, type ChatSession } from "@/components/consult-chat";
 import { LuckBadge } from "@/components/luck-badge";
+import { OriginalToggle } from "@/components/original-toggle";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   EVENT_CATALOG,
   EVENT_NAME,
@@ -17,7 +19,7 @@ import {
   type ManualCastInput,
   type SessionMode,
 } from "@/lib/app-types";
-import { palaceAskText, readScan, type PalaceView } from "@/lib/scan-view";
+import { fortuneDigest, palaceAskText, readScan, type PalaceView } from "@/lib/scan-view";
 import { beijingNowCivil } from "@/lib/fortune-time";
 import { cn, formatBeijing } from "@/lib/utils";
 
@@ -53,12 +55,14 @@ export function ChartWorkspace({
   error,
   onSend,
   onCast,
+  onInsight,
 }: {
   session: ChatSession;
   busy: boolean;
   error?: string;
   onSend: (text: string) => void;
   onCast: (input: ManualCastInput) => void;
+  onInsight: (note?: string) => void;
 }) {
   const view = useMemo(() => readScan(session.scan), [session.scan]);
   const [pane, setPane] = useState<Pane>("split");
@@ -70,6 +74,7 @@ export function ChartWorkspace({
   const [span, setSpan] = useState<FortuneSpan>("month");
   const [lots, setLots] = useState("");
   const [question, setQuestion] = useState("");
+  const [insightNote, setInsightNote] = useState("");
 
   useEffect(() => {
     if (session.mode && session.mode !== "inbox") setMode(session.mode);
@@ -81,13 +86,7 @@ export function ChartWorkspace({
     if (session.lotsCode) setLots(session.lotsCode);
   }, [session.id, session.juLabel, session.mode, session.eventId, session.fortuneSpan, session.lotsCode, session.civil]);
 
-  const fortuneOrder: FortuneSpan[] =
-    session.fortuneSpan === "year"
-      ? ["year", "month", "day"]
-      : session.fortuneSpan === "day"
-        ? ["day", "month", "year"]
-        : ["month", "year", "day"];
-  const fortuneCards = fortuneOrder.map((k) => view.fortune[k]).filter((p): p is NonNullable<typeof p> => Boolean(p));
+  const fortune = fortuneDigest(view.fortune, session.fortuneSpan);
 
   function submitCast() {
     const next: ManualCastInput = { mode, eventId };
@@ -100,7 +99,14 @@ export function ChartWorkspace({
 
   function askPalace(p: PalaceView) {
     setSelectedId(p.id);
+    setPane("chat");
     onSend(palaceAskText(p, session.eventId ? EVENT_NAME[session.eventId] : undefined));
+  }
+
+  function submitInsight() {
+    setPane("chat");
+    onInsight(insightNote.trim() || undefined);
+    setInsightNote("");
   }
 
   const metaBits = [
@@ -177,39 +183,84 @@ export function ChartWorkspace({
                           <li
                             key={g.label}
                             title={g.detail}
-                            className="rounded-full border border-line bg-paper px-2 py-0.5 text-[11px] text-muted"
+                            className="rounded-full border border-line bg-paper px-2 py-0.5 text-xs text-muted"
                           >
                             {g.label}
                           </li>
                         ))}
                       </ul>
                     ) : null}
-                    {view.focus.brief && view.focus.brief !== view.focus.reading ? (
-                      <p className="text-sm text-muted">{view.focus.brief}</p>
-                    ) : null}
+                    <OriginalToggle
+                      original={[view.focus.raw, view.focus.omen, view.focus.classic].filter(Boolean).join("\n")}
+                    />
                   </Section>
                 ) : null}
+                <Section title="事件智断">
+                  <p className="text-sm leading-6 text-muted">
+                    结合这一盘联想一件具体的事。你可以补一句自己的情况，问象会写进对话里，之后还能继续追问。
+                  </p>
+                  <Textarea
+                    id="insight"
+                    value={insightNote}
+                    onChange={(e) => setInsightNote(e.target.value)}
+                    placeholder="比如：下周三要谈回款，对方一直拖着"
+                    className="min-h-20"
+                  />
+                  <Button type="button" className="w-full" disabled={busy} onClick={submitInsight}>
+                    <Sparkles className="size-4" />
+                    智断这件事
+                  </Button>
+                </Section>
                 {view.directions.length ? (
                   <Section title="较顺的方位">
-                    <ul className="space-y-1.5 text-sm text-ink-soft">
+                    <ul className="space-y-3">
                       {view.directions.map((d) => (
-                        <li key={`${d.direction}-${d.gate}`} className="flex items-center justify-between gap-2">
-                          <span>
-                            {d.direction}
-                            {d.gate ? ` · ${d.gate}` : ""}
-                          </span>
-                          <LuckBadge level={d.level} />
+                        <li key={`${d.direction}-${d.gate}`} className="space-y-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm text-ink">
+                              {d.direction}
+                              {d.bagua ? `${d.bagua}宫` : ""}
+                              {d.gate ? ` · ${d.gate}` : ""}
+                            </span>
+                            <LuckBadge level={d.level} />
+                          </div>
+                          {d.suit.length ? (
+                            <p className="text-sm leading-6 text-ink-soft">宜：{d.suit.join("、")}</p>
+                          ) : null}
+                          {d.avoid.length ? (
+                            <p className="text-xs leading-5 text-muted">少碰：{d.avoid.join("、")}</p>
+                          ) : null}
+                          <OriginalToggle original={d.classic || d.note} />
                         </li>
                       ))}
                     </ul>
                   </Section>
                 ) : null}
-                {fortuneCards.map((p) => (
-                  <Section key={p.kind} title={p.title}>
-                    <LuckBadge level={p.level} />
-                    {p.reading ? <p className="text-sm leading-6 text-ink-soft">{p.reading}</p> : null}
+                {fortune.primary ? (
+                  <Section title="运势总看">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-ink">{fortune.primary.title}</span>
+                      <LuckBadge level={fortune.primary.level} />
+                    </div>
+                    {fortune.primary.reading ? (
+                      <p className="text-sm leading-6 text-ink-soft">{fortune.primary.reading}</p>
+                    ) : null}
+                    {fortune.others.length ? (
+                      <p className="text-xs leading-5 text-muted">
+                        {fortune.others
+                          .map((p) => `${p.title}${p.level ? p.level : ""}`)
+                          .join(" · ")}
+                      </p>
+                    ) : fortune.line ? (
+                      <p className="text-xs leading-5 text-muted">{fortune.line}</p>
+                    ) : null}
+                    <OriginalToggle
+                      original={[fortune.primary.raw, fortune.primary.omen, fortune.primary.classic]
+                        .filter(Boolean)
+                        .join("\n")}
+                    />
                   </Section>
-                ))}
+                ) : null}
                 {view.weather ? (
                   <Section title={view.weather.headline || "天象"}>
                     {view.weather.sky ? <p className="text-sm text-ink-soft">{view.weather.sky}</p> : null}
@@ -227,6 +278,7 @@ export function ChartWorkspace({
                             <LuckBadge level={p.level} />
                           </div>
                           <p className="mt-0.5 text-ink-soft">{p.summary}</p>
+                          <OriginalToggle original={p.original} />
                         </li>
                       ))}
                     </ul>
@@ -237,7 +289,7 @@ export function ChartWorkspace({
               <Card className="space-y-2 p-4">
                 <p className="font-display text-lg text-ink">还没有起盘</p>
                 <p className="text-sm leading-6 text-muted">
-                  在右边跟问象说话，例如「下个月运势」「今晚八点看回款」。也可以用下面的表单自己起一盘，智断会写在对话框里。
+                  在右边跟问象说话，例如「下个月运势」「今晚八点看回款」。也可以用下面的表单自己起一盘。起好之后，点「智断这件事」会把联想写进对话框，还能继续追问。
                 </p>
               </Card>
             )}
@@ -306,7 +358,7 @@ export function ChartWorkspace({
         >
           <div className="shrink-0 border-b border-line px-4 py-2">
             <p className="font-display text-ink">智断</p>
-            <p className="text-xs text-muted">问象的答复都在这里</p>
+            <p className="text-xs text-muted">问象的答复都在这里。点左边「智断这件事」，还能继续追问。</p>
           </div>
           <ConsultChat session={session} busy={busy} error={error} onSend={onSend} hideMeta />
         </div>

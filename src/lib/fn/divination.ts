@@ -30,13 +30,15 @@ import {
   shouldOpenNewLotsChart,
   shouldOpenNewTimeChart,
   sisterSay,
+  formatInsightReply,
   beijingNowCivil,
   parseFortuneRelative,
   type CastMode,
   type ExtractedTurn,
 } from "@/lib/agent.server";
+import { splitOrigin, withOrigin } from "@/lib/origin";
 import { resolveLocation } from "@/lib/location.server";
-import { runLots, runScan, type QueryBody } from "@/lib/qimen.server";
+import { runCompose, runLots, runScan, type QueryBody } from "@/lib/qimen.server";
 import { NeedPayError, consumeCast } from "@/lib/fn/billing";
 import { hourNameOf, shichenRangeLabel } from "@/lib/shichen";
 import { formatBeijing, newId, type JsonValue } from "@/lib/utils";
@@ -388,9 +390,13 @@ async function fillChart(opts: {
   `;
   const fortunePack = asObj(asObj(scan).fortune ?? null);
   const period = fortuneSpan ? asObj(fortunePack[fortuneSpan] ?? null) : null;
+  const focus = asObj(asObj(scan).focus ?? null);
+  const assoc = Array.isArray(period?.associations)
+    ? (period.associations as unknown[]).map((x) => String(x ?? "").trim()).filter(Boolean).slice(0, 3).join(" ")
+    : "";
   const periodLine =
     opts.mode === "fortune" && civilInput
-      ? `${civilInput.year}年${civilInput.month}月${fortuneSpan === "year" ? "年运" : fortuneSpan === "day" ? "日运" : "月运"}。${period?.reading ? String(period.reading) : ""}`
+      ? `${civilInput.year}年${civilInput.month}月${spanName}。${assoc}`
       : "";
   const allowPlace = isPreciseLocation(opts.loc);
   const extra = [periodLine || undefined, opts.promptExtra].filter(Boolean).join("\n");
@@ -405,7 +411,17 @@ async function fillChart(opts: {
     portrait: opts.profile.portrait,
     extra: extra || undefined,
   });
-  await insertMessage(opts.sessionId, opts.userId, "assistant", text, "compose");
+  const original = [
+    period?.reading ? String(period.reading) : "",
+    period?.omen ? String(period.omen) : "",
+    period?.classicCite ? String(period.classicCite) : "",
+    focus.reading ? String(focus.reading) : "",
+    focus.omen ? String(focus.omen) : "",
+    focus.classicCite ? String(focus.classicCite) : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  await insertMessage(opts.sessionId, opts.userId, "assistant", withOrigin(text, original), "compose");
   return loadPacked(opts.sessionId, opts.userId);
 }
 
@@ -561,7 +577,7 @@ async function loadHistory(sessionId: string, userId: string) {
   `;
   return historyRows.reverse().map((m) => ({
     role: m.role as "user" | "assistant",
-    content: m.content,
+    content: splitOrigin(m.content).plain,
   }));
 }
 
@@ -776,6 +792,117 @@ export const castManual = createServerFn({ method: "POST" })
         return { type: "reply" as const, session: await loadPacked(rows[0].id, context.userId) };
       }
       throw err;
+    }
+  });
+
+export const sendInsight = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator(
+    z.object({
+      sessionId: z.string().min(1),
+      note: z.string().trim().max(400).optional(),
+    }),
+  )
+  .handler(async ({ context, data }) => {
+    const sql = await getSql();
+    const rows = await sql<SessionRow>`
+      select * from divination_sessions where id = ${data.sessionId} and user_id = ${context.userId} limit 1
+    `;
+    const session = rows[0];
+    if (!session) throw new Error("找不到这一盘");
+    const scan = JSON.parse(session.scan_json || "{}") as Record<string, unknown>;
+    const chart = asObj((scan.chart ?? null) as JsonValue);
+    const palaces = asObj((chart.palaces ?? null) as JsonValue);
+    if (!session.ju_label && !Object.keys(palaces).length) {
+      throw new Error("先起一盘，再做事件智断");
+    }
+    const profile = await loadProfile(context.userId);
+    const loc = locFromProfile(profile, JSON.parse(session.location_json || "{}") as GeoLocation);
+    const eventId = (session.event_id || "wealth") as EventId;
+    const note = data.note?.trim() || "";
+    const question = note
+      ? `请结合我补充的情况，就「${EVENT_NAME[eventId]}」做联想智断：${note}`
+      : `请就当前事项「${EVENT_NAME[eventId]}」做联想智断，组一件可能发生的具体事。`;
+    const userLine = note ? `事件智断：${note}` : `请就「${EVENT_NAME[eventId]}」做事件智断`;
+    await insertMessage(session.id, context.userId, "user", userLine, "user");
+    const civil =
+      session.civil_year && session.civil_month && session.civil_day
+        ? {
+            year: session.civil_year,
+            month: session.civil_month,
+            day: session.civil_day,
+            hour: session.civil_hour ?? 12,
+            minute: session.civil_minute ?? 0,
+          }
+        : civilOf(scan as JsonValue);
+    const history = (
+      await sql<MsgRow>`
+        select id, session_id, role, content, kind, created_at
+        from messages where session_id = ${session.id} and user_id = ${context.userId}
+        order by id desc limit 8
+      `
+    )
+      .reverse()
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .map((m) => ({ role: m.role as "user" | "assistant", content: splitOrigin(m.content).plain }));
+    const allowPlace = isPreciseLocation(loc);
+    try {
+      const composed = (await runCompose(
+        bodyFrom({
+          profile,
+          loc: loc.province ? loc : BEIJING_LOCATION,
+          civil,
+          eventId,
+          casting: session.mode === "lots" ? "lots" : "chaibu",
+          lotsCode: session.lots_code,
+          lotsMonth: civil.month,
+          question,
+          history,
+        }),
+      )) as { scene?: Record<string, unknown> };
+      const packed = formatInsightReply(composed.scene, allowPlace);
+      let text = packed.plain;
+      try {
+        const spoken = await sisterSay({
+          question,
+          clues: cluesFromScan(scan),
+          juLabel: session.ju_label ?? undefined,
+          hourName: session.hour_name ?? undefined,
+          eventName: EVENT_NAME[eventId],
+          allowPlace,
+          place: allowPlace ? loc.city : undefined,
+          extra: [
+            note ? `用户补充：${note}` : "这是用户点的事件智断。",
+            packed.original ? `接口联想原文：\n${packed.original}` : "",
+            "用白话讲一件可能发生的具体事，顺逆和宜忌说人话。想接着问就告诉用户直接在对话里说。",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          portrait: profile.portrait,
+        });
+        if (spoken && spoken.length >= 12) text = spoken;
+      } catch {
+        /* keep packed.plain */
+      }
+      await insertMessage(session.id, context.userId, "assistant", withOrigin(text, packed.original), "compose");
+      return { type: "reply" as const, session: await loadPacked(session.id, context.userId) };
+    } catch (err) {
+      const text = await sisterSay({
+        question,
+        clues: cluesFromScan(scan),
+        juLabel: session.ju_label ?? undefined,
+        hourName: session.hour_name ?? undefined,
+        eventName: EVENT_NAME[eventId],
+        allowPlace,
+        place: allowPlace ? loc.city : undefined,
+        extra: note ? `用户补充：${note}` : "这是用户点的事件智断。结合盘面用白话联想。",
+        portrait: profile.portrait,
+      });
+      await insertMessage(session.id, context.userId, "assistant", text, "compose");
+      if (err instanceof Error && /额度|key|模型/i.test(err.message)) {
+        return { type: "reply" as const, session: await loadPacked(session.id, context.userId) };
+      }
+      return { type: "reply" as const, session: await loadPacked(session.id, context.userId) };
     }
   });
 
